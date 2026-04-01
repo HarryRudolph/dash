@@ -1,0 +1,171 @@
+.sat-page { padding: 2rem; }
+.sat-page h1 { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.25rem; }
+.sat-summary {
+  color: var(--text-dim); font-size: 0.9rem; margin-bottom: 1.5rem;
+}
+.sat-summary span { font-family: var(--mono); color: var(--text); }
+
+/* -- Layout: globe + pass list side by side ------------------------------ */
+.sat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+@media (max-width: 1100px) {
+  .sat-grid { grid-template-columns: 1fr; }
+}
+
+/* -- Status cards row ---------------------------------------------------- */
+.sat-status-row {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.sat-status-card {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.sat-status-card .stat-icon {
+  width: 36px; height: 36px;
+  border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.stat-icon.sensor   { background: #69a7ff22; color: var(--accent); }
+.stat-icon.last     { background: #4ead6b22; color: var(--success); }
+.stat-icon.next     { background: #d4a84322; color: var(--warning); }
+.stat-icon.count    { background: #e55b5b22; color: var(--danger); }
+.sat-status-card .stat-icon svg {
+  width: 18px; height: 18px;
+  stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.sat-status-card .stat-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.sat-status-card .stat-value {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  margin-top: 0.1rem;
+}
+
+/* -- Globe card ---------------------------------------------------------- */
+.globe-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+.globe-card h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  padding: 1rem 1.25rem 0;
+  margin-bottom: 0.5rem;
+}
+.globe-card iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 380px;
+  border: none;
+}
+.globe-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  background: var(--surface-2);
+  margin: 0 1.25rem 1.25rem;
+  border-radius: var(--radius);
+  min-height: 350px;
+}
+
+/* -- Passes card --------------------------------------------------------- */
+.passes-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+}
+.passes-card h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 0.75rem;
+}
+
+.pass-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 420px;
+}
+
+.pass-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.pass-item:last-child { border-bottom: none; }
+
+.pass-imaging-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pass-imaging-dot.imaging { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.pass-imaging-dot.no-imaging { background: var(--text-dim); opacity: 0.4; }
+
+.pass-info { flex: 1; min-width: 0; }
+.pass-sat-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pass-time {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.1rem;
+}
+
+.pass-meta {
+  text-align: right;
+  flex-shrink: 0;
+}
+.pass-elevation {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+.pass-duration {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.pass-empty, .pass-loading {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 120px; color: var(--text-dim); font-size: 0.85rem;
+}
+.pass-error { color: var(--danger); }

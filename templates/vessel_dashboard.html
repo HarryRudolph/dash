@@ -1,0 +1,515 @@
+{% extends "base.html" %}
+
+{% block title %}Vessel — {{ mmsi }}{% endblock %}
+
+{% block nav_active_vessels %}active{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/css/vessel_dashboard.css">
+{% endblock %}
+
+{% block content %}
+
+<!-- Top bar -->
+<div class="topbar">
+  <h1 id="vessel-name">Vessel</h1>
+  <span class="mmsi">{{ mmsi }}</span>
+  <span class="badge" id="vessel-type"></span>
+</div>
+
+<!-- Tabs -->
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="overview">Overview</button>
+  <button class="tab-btn" data-tab="network">Network</button>
+  <button class="tab-btn" data-tab="activity">Activity</button>
+</div>
+
+<!-- Tab panels -->
+<div class="tab-panels">
+
+  <!-- ================ OVERVIEW ================ -->
+  <div class="tab-panel active" id="panel-overview">
+    <div class="overview-grid">
+      <div class="card" id="identity-card">
+        <h2>Identity</h2>
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+      <div class="card" id="ownership-card">
+        <h2>Ownership</h2>
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+      <div class="card map-card">
+        <h2>Last 5 Days Track</h2>
+        <iframe class="map-frame" id="map-frame"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================ NETWORK ================ -->
+  <div class="tab-panel" id="panel-network">
+    <div class="card">
+      <h2>Entity Network</h2>
+      <div class="network-toolbar">
+        <div class="network-status-group">
+          <div class="network-status" id="network-status">Waiting to load graph…</div>
+          <div class="network-selected" id="network-selected">No entity selected</div>
+        </div>
+        <div class="network-actions">
+          <button class="network-btn" id="network-expand-btn" type="button" disabled>Expand Selected</button>
+          <button class="network-btn" id="network-fit-btn" type="button" disabled>Fit Graph</button>
+          <button class="network-btn" id="network-clear-btn" type="button" disabled>Clear Focus</button>
+        </div>
+      </div>
+      <div id="cy"><div class="loading"><div class="spinner"></div> Loading graph…</div></div>
+    </div>
+  </div>
+
+  <!-- ================ ACTIVITY ================ -->
+  <div class="tab-panel" id="panel-activity">
+    <div class="card">
+      <h2>Recent Events</h2>
+      <div id="events-container">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Pattern of Life — Last 12 Months</h2>
+      <div class="heatmap-container" id="pattern-container">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/lib/cytoscape.min.js"></script>
+<script>
+(function() {
+  const MMSI = "{{ mmsi }}";
+  const BASE = `/dashboard/vessel_info/${MMSI}`;
+
+  const loaded = { overview: false, network: false, activity: false };
+  const networkState = {
+    cy: null,
+    selectedNodeId: null,
+    expandedEntityIds: new Set(),
+    expandable: false,
+  };
+
+  // ================================================================
+  // Tab switching with lazy load
+  // ================================================================
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.tab;
+      document.getElementById(`panel-${tab}`).classList.add('active');
+      loadTab(tab);
+    });
+  });
+
+  function loadTab(tab) {
+    if (loaded[tab]) return;
+    loaded[tab] = true;
+    switch (tab) {
+      case 'overview': loadOverview(); break;
+      case 'network':  loadNetwork();  break;
+      case 'activity': loadActivity(); break;
+    }
+  }
+
+  // ================================================================
+  // Helpers
+  // ================================================================
+  async function fetchJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const payload = await res.json();
+        if (payload?.detail) detail = payload.detail;
+      } catch (e) {
+        // Ignore JSON parsing errors and fall back to status text.
+      }
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  function showError(container, msg) {
+    container.innerHTML = `<div class="error-msg">${msg}</div>`;
+  }
+
+  function renderKV(container, data, label) {
+    let html = `<h2>${label}</h2><div class="kv-grid">`;
+    for (const [key, val] of Object.entries(data)) {
+      const display = val ?? '—';
+      const labelText = key.replace(/_/g, ' ');
+      html += `<div class="kv-item">
+        <span class="kv-label">${labelText}</span>
+        <span class="kv-value">${display}</span>
+      </div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  function setNetworkStatus(message, isError = false) {
+    const el = document.getElementById('network-status');
+    el.textContent = message;
+    el.classList.toggle('is-error', isError);
+  }
+
+  function updateNetworkSelection(node) {
+    const selectedEl = document.getElementById('network-selected');
+    const expandBtn = document.getElementById('network-expand-btn');
+    const clearBtn = document.getElementById('network-clear-btn');
+
+    if (!node) {
+      networkState.selectedNodeId = null;
+      selectedEl.textContent = 'No entity selected';
+      expandBtn.disabled = true;
+      clearBtn.disabled = !networkState.cy;
+      return;
+    }
+
+    networkState.selectedNodeId = node.id();
+    const label = node.data('label') || node.id();
+    const count = node.data('record_count');
+    selectedEl.textContent =
+      count ? `${label} • ${count} record${count === 1 ? '' : 's'}` : label;
+    expandBtn.disabled =
+      !networkState.expandable || networkState.expandedEntityIds.has(node.data('entity_id'));
+    clearBtn.disabled = false;
+  }
+
+  function focusNodeNeighborhood(node) {
+    if (!networkState.cy) return;
+    networkState.cy.elements().style('opacity', 0.15);
+    node.closedNeighborhood().style('opacity', 1);
+  }
+
+  function clearNetworkFocus() {
+    if (!networkState.cy) return;
+    networkState.cy.elements().style('opacity', 1);
+    networkState.cy.elements().unselect();
+    updateNetworkSelection(null);
+  }
+
+  function mergeNetworkElements(elements) {
+    const cy = networkState.cy;
+    if (!cy) return;
+
+    const additions = [];
+
+    for (const node of elements.nodes || []) {
+      if (!cy.getElementById(node.data.id).length) additions.push(node);
+    }
+    for (const edge of elements.edges || []) {
+      if (!cy.getElementById(edge.data.id).length) additions.push(edge);
+    }
+
+    if (additions.length) {
+      cy.add(additions);
+      cy.layout({
+        name: 'cose',
+        animate: true,
+        animationDuration: 350,
+        fit: false,
+        nodeRepulsion: 8000,
+        idealEdgeLength: 120,
+      }).run();
+    }
+  }
+
+  async function expandSelectedNode() {
+    const cy = networkState.cy;
+    if (!cy || !networkState.selectedNodeId) return;
+
+    const node = cy.getElementById(networkState.selectedNodeId);
+    if (!node.length) return;
+
+    const entityId = node.data('entity_id');
+    if (networkState.expandedEntityIds.has(entityId)) {
+      setNetworkStatus(`${node.data('label')} is already expanded.`);
+      updateNetworkSelection(node);
+      return;
+    }
+
+    const button = document.getElementById('network-expand-btn');
+    button.disabled = true;
+    setNetworkStatus(`Expanding ${node.data('label')}…`);
+
+    try {
+      const data = await fetchJSON(`${BASE}/network/expand/${entityId}`);
+      mergeNetworkElements(data.elements);
+      networkState.expandedEntityIds.add(entityId);
+      updateNetworkSelection(node);
+
+      const newEdges = (data.elements.edges || []).length;
+      if (data.meta?.warning) {
+        setNetworkStatus(data.meta.warning, true);
+      } else {
+        setNetworkStatus(
+          newEdges
+            ? `Expanded ${node.data('label')} with ${newEdges} relationship${newEdges === 1 ? '' : 's'}.`
+            : `No further relationships returned for ${node.data('label')}.`
+        );
+      }
+      focusNodeNeighborhood(node);
+    } catch (e) {
+      setNetworkStatus(`Expansion failed: ${e.message}`, true);
+      updateNetworkSelection(node);
+    }
+  }
+
+  // ================================================================
+  // Overview
+  // ================================================================
+  async function loadOverview() {
+    try {
+      const data = await fetchJSON(`${BASE}/overview`);
+      renderKV(document.getElementById('identity-card'), data.identity, 'Identity');
+      renderKV(document.getElementById('ownership-card'), data.ownership, 'Ownership');
+      if (data.identity.name) {
+        document.getElementById('vessel-name').textContent = data.identity.name;
+      }
+      if (data.identity.vessel_type) {
+        document.getElementById('vessel-type').textContent = data.identity.vessel_type;
+      }
+    } catch (e) {
+      showError(document.getElementById('identity-card'), 'Failed to load vessel data');
+      showError(document.getElementById('ownership-card'), 'Failed to load ownership data');
+    }
+
+    try {
+      const res = await fetch(`${BASE}/map`);
+      const html = await res.text();
+      document.getElementById('map-frame').srcdoc = html;
+    } catch (e) {
+      document.getElementById('map-frame').srcdoc =
+        '<p style="color:#e55b5b;padding:2rem;">Failed to load map</p>';
+    }
+  }
+
+  // ================================================================
+  // Network — Cytoscape.js
+  // ================================================================
+  async function loadNetwork() {
+    const container = document.getElementById('cy');
+    const fitBtn = document.getElementById('network-fit-btn');
+    const clearBtn = document.getElementById('network-clear-btn');
+    try {
+      const data = await fetchJSON(`${BASE}/network`);
+      container.innerHTML = '';
+
+      const cy = cytoscape({
+        container: container,
+        elements: data.elements,
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'label':            'data(label)',
+              'font-size':        '11px',
+              'color':            '#e5ebf5',
+              'text-valign':      'bottom',
+              'text-margin-y':    6,
+              'background-color': '#69a7ff',
+              'width':            30,
+              'height':           30,
+              'border-width':     2,
+              'border-color':     '#4c7fd1',
+            }
+          },
+          {
+            selector: 'node[type="vessel"]',
+            style: { 'background-color': '#69a7ff', 'shape': 'diamond' }
+          },
+          {
+            selector: 'node[type="person"]',
+            style: { 'background-color': '#4ead6b', 'shape': 'ellipse' }
+          },
+          {
+            selector: 'node[type="company"]',
+            style: { 'background-color': '#d4a843', 'shape': 'round-rectangle' }
+          },
+          {
+            selector: 'node[type="entity"]',
+            style: { 'background-color': '#7b8aa3', 'shape': 'hexagon' }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'label':              'data(label)',
+              'font-size':          '9px',
+              'color':              '#8d99ab',
+              'text-rotation':      'autorotate',
+              'width':              1.5,
+              'line-color':         '#2d343d',
+              'target-arrow-color': '#2d343d',
+              'target-arrow-shape': 'triangle',
+              'curve-style':        'bezier',
+            }
+          },
+          {
+            selector: 'edge[line_style="dashed"]',
+            style: { 'line-style': 'dashed', 'target-arrow-shape': 'none' }
+          },
+          {
+            selector: ':selected',
+            style: { 'border-color': '#e5ebf5', 'border-width': 3 }
+          }
+        ],
+        layout: {
+          name: 'cose',
+          animate: true,
+          animationDuration: 500,
+          nodeRepulsion: 8000,
+          idealEdgeLength: 120,
+        },
+        minZoom: 0.3,
+        maxZoom: 3,
+        wheelSensitivity: 0.3,
+      });
+
+      networkState.cy = cy;
+      networkState.expandedEntityIds = new Set();
+      networkState.expandable = Boolean(data.meta?.expandable);
+      if (data.meta?.seed_entity_id) networkState.expandedEntityIds.add(data.meta.seed_entity_id);
+
+      fitBtn.disabled = false;
+      clearBtn.disabled = false;
+      document.getElementById('network-expand-btn').disabled = true;
+
+      if (data.meta?.warning) {
+        setNetworkStatus(data.meta.warning, true);
+      } else if (data.meta?.seed_entity_id) {
+        setNetworkStatus('Graph loaded. Select a node and expand outward.');
+      } else {
+        setNetworkStatus('Graph loaded.');
+      }
+
+      cy.on('tap', 'node', function(evt) {
+        const node = evt.target;
+        focusNodeNeighborhood(node);
+        updateNetworkSelection(node);
+      });
+      cy.on('tap', function(evt) {
+        if (evt.target === cy) clearNetworkFocus();
+      });
+
+    } catch (e) {
+      networkState.cy = null;
+      networkState.expandable = false;
+      fitBtn.disabled = true;
+      clearBtn.disabled = true;
+      document.getElementById('network-expand-btn').disabled = true;
+      setNetworkStatus(`Failed to load graph: ${e.message}`, true);
+      showError(container, 'Failed to load network graph');
+    }
+  }
+
+  // ================================================================
+  // Activity — Events + Pattern
+  // ================================================================
+  async function loadActivity() {
+    const evContainer = document.getElementById('events-container');
+    try {
+      const events = await fetchJSON(`${BASE}/events`);
+      if (events.length === 0) {
+        evContainer.innerHTML = '<div class="loading">No events recorded</div>';
+      } else {
+        let html = `<table class="events-table">
+          <thead><tr><th>Time</th><th>Type</th><th>Summary</th></tr></thead><tbody>`;
+        for (const ev of events) {
+          const badgeClass = ev.event_type in
+            {dark_period:1, sts_transfer:1, loitering:1}
+            ? ev.event_type : 'default';
+          html += `<tr>
+            <td style="font-family:var(--mono);font-size:0.8rem;white-space:nowrap;">
+              ${ev.timestamp ?? '—'}</td>
+            <td><span class="event-badge ${badgeClass}">${ev.event_type ?? '—'}</span></td>
+            <td>${ev.summary ?? '—'}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        evContainer.innerHTML = html;
+      }
+    } catch (e) {
+      showError(evContainer, 'Failed to load events');
+    }
+
+    const patContainer = document.getElementById('pattern-container');
+    try {
+      const pattern = await fetchJSON(`${BASE}/pattern`);
+      if (!pattern.x_labels.length || !pattern.y_labels.length) {
+        patContainer.innerHTML = '<div class="loading">No pattern data available</div>';
+        return;
+      }
+
+      const xLen = pattern.x_labels.length;
+      const yLen = pattern.y_labels.length;
+      const cellW = 40, cellH = 22, padL = 60, padT = 30;
+      const w = padL + xLen * cellW;
+      const h = padT + yLen * cellH;
+
+      let maxVal = 1;
+      for (const row of pattern.values)
+        for (const v of row) if (v > maxVal) maxVal = v;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.className = 'heatmap-canvas';
+      canvas.style.maxWidth = '100%';
+      const ctx = canvas.getContext('2d');
+
+      ctx.fillStyle = '#14181d';
+      ctx.fillRect(0, 0, w, h);
+
+      for (let yi = 0; yi < yLen; yi++) {
+        for (let xi = 0; xi < xLen; xi++) {
+          const v = pattern.values[yi]?.[xi] ?? 0;
+          const t = v / maxVal;
+          ctx.fillStyle = `hsl(${216 - t * 18}, ${36 + t * 24}%, ${14 + t * 30}%)`;
+          ctx.fillRect(padL + xi * cellW, padT + yi * cellH, cellW - 1, cellH - 1);
+        }
+      }
+
+      ctx.fillStyle = '#8d99ab';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      for (let xi = 0; xi < xLen; xi++)
+        ctx.fillText(pattern.x_labels[xi], padL + xi * cellW + cellW / 2, padT - 8);
+      ctx.textAlign = 'right';
+      for (let yi = 0; yi < yLen; yi++)
+        ctx.fillText(pattern.y_labels[yi], padL - 8, padT + yi * cellH + cellH / 2 + 3);
+
+      patContainer.innerHTML = '';
+      patContainer.appendChild(canvas);
+    } catch (e) {
+      showError(patContainer, 'Failed to load pattern of life');
+    }
+  }
+
+  // Boot
+  document.getElementById('network-expand-btn').addEventListener('click', expandSelectedNode);
+  document.getElementById('network-fit-btn').addEventListener('click', () => {
+    if (!networkState.cy) return;
+    networkState.cy.fit(undefined, 60);
+    setNetworkStatus('Graph fitted to viewport.');
+  });
+  document.getElementById('network-clear-btn').addEventListener('click', () => {
+    clearNetworkFocus();
+    setNetworkStatus('Focus cleared.');
+  });
+
+  loadTab('overview');
+})();
+</script>
+{% endblock %}

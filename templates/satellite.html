@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}Satellite{% endblock %}
+
+{% block nav_active_satellite %}active{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/css/satellite.css">
+{% endblock %}
+
+{% block content %}
+<div class="sat-page">
+  <h1>SAR Satellite Passes</h1>
+  <p class="sat-summary" id="summary">Loading pass data…</p>
+
+  <!-- Status cards -->
+  <div class="sat-status-row" id="status-row">
+    <div class="sat-status-card">
+      <div class="stat-icon sensor">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2m-9-11h2m18 0h2"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Sensor</div>
+        <div class="stat-value">{{ sensor.name }}</div>
+      </div>
+    </div>
+    <div class="sat-status-card">
+      <div class="stat-icon last">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Last Pass</div>
+        <div class="stat-value" id="last-pass-value">—</div>
+      </div>
+    </div>
+    <div class="sat-status-card">
+      <div class="stat-icon next">
+        <svg viewBox="0 0 24 24"><path d="M13 7 9 3 5 7l4 4"/><path d="m17 11 4 4-4 4-4-4"/><path d="m8 12 4 4 6-6-4-4Z"/><path d="m16 8 3-3"/><path d="M9 21a6 6 0 0 0-6-6"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Next Predicted</div>
+        <div class="stat-value" id="next-pass-value">—</div>
+      </div>
+    </div>
+    <div class="sat-status-card">
+      <div class="stat-icon count">
+        <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Passes (24h)</div>
+        <div class="stat-value" id="pass-count-value">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Globe + pass list -->
+  <div class="sat-grid">
+    <div class="globe-card">
+      <h2>Orbit View</h2>
+      {#
+        Satvis iframe — loads from /satvis/ static mount.
+        Build satvis (next branch) and place dist/ contents in static/satvis/.
+        If satvis is not deployed, a placeholder is shown instead.
+      #}
+      <iframe id="satvis-frame"
+              src="/satvis/?gs={{ sensor.lat }},{{ sensor.lon }}&layers={{ satvis_layer }}&elements=Point,Label,Orbit"
+              style="display:none;"></iframe>
+      <div class="globe-placeholder" id="globe-placeholder">
+        Satvis not loaded — place built dist/ in static/satvis/
+      </div>
+    </div>
+
+    <div class="passes-card">
+      <h2>Recent Passes</h2>
+      <div class="pass-list" id="pass-list">
+        <div class="pass-loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const SENSOR_LAT = {{ sensor.lat }};
+  const SENSOR_LON = {{ sensor.lon }};
+  const SATVIS_LAYER = "{{ satvis_layer }}";
+
+  // -- Satvis iframe detection -----------------------------------------------
+  const frame = document.getElementById('satvis-frame');
+  const placeholder = document.getElementById('globe-placeholder');
+
+  frame.addEventListener('load', function() {
+    // If satvis loaded successfully, show the iframe
+    frame.style.display = 'block';
+    placeholder.style.display = 'none';
+  });
+  frame.addEventListener('error', function() {
+    frame.style.display = 'none';
+    placeholder.style.display = 'flex';
+  });
+
+  // -- Load pass data --------------------------------------------------------
+  async function load() {
+    const list = document.getElementById('pass-list');
+    const summary = document.getElementById('summary');
+
+    try {
+      const res = await fetch('/dashboard/satellite/passes?hours=24');
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+
+      const total = data.passes.length;
+      const imaging = data.passes.filter(p => p.imaging).length;
+
+      summary.innerHTML = `<span>${total}</span> passes in the last <span>${data.hours}</span>h` +
+        (imaging > 0 ? ` — <span>${imaging}</span> with imaging` : '');
+
+      document.getElementById('pass-count-value').textContent = total;
+
+      // last pass
+      if (data.passes.length > 0) {
+        const last = data.passes[0];
+        document.getElementById('last-pass-value').textContent =
+          `${last.satellite} — ${formatTime(last.pass_start)}`;
+      }
+
+      // next pass
+      if (data.next_pass) {
+        document.getElementById('next-pass-value').textContent =
+          `${data.next_pass.satellite} — ${formatTime(data.next_pass.predicted_start)}`;
+      }
+
+      renderPasses(list, data.passes);
+    } catch (e) {
+      list.innerHTML = `<div class="pass-loading pass-error">Failed to load pass data</div>`;
+    }
+  }
+
+  function renderPasses(container, passes) {
+    if (passes.length === 0) {
+      container.innerHTML = '<div class="pass-empty">No passes in the last 24 hours</div>';
+      return;
+    }
+
+    container.innerHTML = '';
+    for (const p of passes) {
+      const dur = passMinutes(p.pass_start, p.pass_end);
+      const el = document.createElement('div');
+      el.className = 'pass-item';
+      el.innerHTML = `
+        <div class="pass-imaging-dot ${p.imaging ? 'imaging' : 'no-imaging'}"
+             title="${p.imaging ? 'Imaging detected' : 'No imaging'}"></div>
+        <div class="pass-info">
+          <div class="pass-sat-name">${p.satellite} <span style="color:var(--text-dim);font-size:0.75rem;">${p.norad_id}</span></div>
+          <div class="pass-time">${formatTimeShort(p.pass_start)} – ${formatTimeShort(p.pass_end)}</div>
+        </div>
+        <div class="pass-meta">
+          <div class="pass-elevation">${p.max_elevation != null ? p.max_elevation.toFixed(1) + '°' : '—'}</div>
+          <div class="pass-duration">${dur}</div>
+        </div>`;
+
+      // Click to scrub satvis to this pass time
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => {
+        const t = new Date(p.pass_start).toISOString();
+        frame.src = `/satvis/?gs=${SENSOR_LAT},${SENSOR_LON}&layers=${SATVIS_LAYER}&elements=Point,Label,Orbit&time=${t}`;
+      });
+
+      container.appendChild(el);
+    }
+  }
+
+  function passMinutes(start, end) {
+    try {
+      const ms = new Date(end) - new Date(start);
+      const m = Math.round(ms / 60000);
+      return `${m}m`;
+    } catch { return '—'; }
+  }
+
+  function formatTime(iso) {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 0) {
+        const mins = Math.round(-diff / 60000);
+        if (mins < 60) return `in ${mins}m`;
+        return `in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+      }
+      if (diff < 60000) return 'just now';
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    } catch { return iso; }
+  }
+
+  function formatTimeShort(iso) {
+    try {
+      return new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    } catch { return iso; }
+  }
+
+  load();
+})();
+</script>
+{% endblock %}

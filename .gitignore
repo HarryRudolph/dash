@@ -1,0 +1,45 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.python-version
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environment / logs
+.env
+.env.local
+*.log
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Node / satvis source worktrees if used locally
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+satvis/
+
+# Satvis generated artifacts that are useful locally but noisy in git
+static/satvis/**/*.map
+
+# Seeded TLE group data is deployment/runtime data, not source.
+# Keep the directory via the committed .gitignore file already in place.
+static/satvis/data/tle/groups/*.txt

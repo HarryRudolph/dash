@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+npm-debug.log*
+static/satvis/**/*.map
+satvis/
+dist/
+build/

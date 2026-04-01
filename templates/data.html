@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Data Feeds{% endblock %}
+
+{% block nav_active_data %}active{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/css/data.css">
+{% endblock %}
+
+{% block content %}
+<div class="data-page">
+  <h1>Data Feeds</h1>
+  <p class="data-summary" id="summary">Loading feed status…</p>
+  <div id="feed-container">
+    <div class="feed-loading"><div class="spinner"></div> Loading…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const SOURCE_LABELS = {
+    elasticsearch: 'Elasticsearch',
+    postgres: 'PostgreSQL',
+    mongodb: 'MongoDB',
+    senzing: 'Senzing',
+  };
+
+  async function load() {
+    const container = document.getElementById('feed-container');
+    const summary = document.getElementById('summary');
+
+    try {
+      const res = await fetch('/dashboard/data/feeds');
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+
+      const upCount = data.feeds.filter(f => f.status === 'up').length;
+      const total = data.total_count;
+      summary.innerHTML = `<span>${upCount}</span> of <span>${data.feeds.length}</span> feeds online` +
+        (total != null ? ` — <span>${total.toLocaleString()}</span> total records` : '');
+
+      // group by source
+      const groups = {};
+      for (const feed of data.feeds) {
+        const src = feed.source || 'other';
+        if (!groups[src]) groups[src] = [];
+        groups[src].push(feed);
+      }
+
+      container.innerHTML = '';
+      for (const [source, feeds] of Object.entries(groups)) {
+        const section = document.createElement('div');
+        section.className = 'source-group';
+        section.innerHTML = `<div class="source-heading">${SOURCE_LABELS[source] || source}</div>`;
+        const grid = document.createElement('div');
+        grid.className = 'feed-grid';
+        for (const feed of feeds) {
+          grid.appendChild(renderFeed(feed));
+        }
+        section.appendChild(grid);
+        container.appendChild(section);
+      }
+    } catch (e) {
+      container.innerHTML = `<div class="feed-loading feed-error">Failed to load feed status</div>`;
+    }
+  }
+
+  function renderFeed(feed) {
+    const card = document.createElement('div');
+    card.className = 'feed-card';
+
+    const count = feed.total_count != null ? feed.total_count.toLocaleString() : '—';
+    const lastRec = feed.last_record ? formatTime(feed.last_record) : '—';
+    const history = feed.history || [];
+
+    let chartHTML = '';
+    if (history.length > 0) {
+      const maxVal = Math.max(1, ...history.map(h => h.count));
+      const bars = history.map(h => {
+        const pct = Math.max(2, (h.count / maxVal) * 100);
+        const cls = h.count === 0 ? 'bar empty' : 'bar';
+        return `<div class="${cls}" style="height:${pct}%" title="${h.count.toLocaleString()} at ${h.timestamp}"></div>`;
+      }).join('');
+      chartHTML = `
+        <div class="feed-chart">${bars}</div>
+        <div class="chart-label"><span>24h ago</span><span>now</span></div>`;
+    } else {
+      chartHTML = `
+        <div class="feed-chart"><div class="bar empty" style="height:2px;flex:1"></div></div>
+        <div class="chart-label"><span>No history data</span><span></span></div>`;
+    }
+
+    card.innerHTML = `
+      <div class="feed-header">
+        <div class="status-dot ${feed.status}"></div>
+        <h2>${feed.name}</h2>
+        <span class="status-label ${feed.status}">${feed.status}</span>
+      </div>
+      <div class="feed-stats">
+        <div>
+          <div class="feed-stat-label">Total Records</div>
+          <div class="feed-stat-value">${count}</div>
+        </div>
+        <div>
+          <div class="feed-stat-label">Last Record</div>
+          <div class="feed-stat-value">${lastRec}</div>
+        </div>
+      </div>
+      ${chartHTML}`;
+
+    return card;
+  }
+
+  function formatTime(iso) {
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 60000) return 'just now';
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    } catch { return iso; }
+  }
+
+  load();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,157 @@
+/* ================================================================
+   base.css — Vertical nav layout
+   ================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #0b0d10;
+  --surface:    #14181d;
+  --surface-2:  #1c2128;
+  --border:     #2d343d;
+  --text:       #e5ebf5;
+  --text-dim:   #8d99ab;
+  --accent:     #69a7ff;
+  --accent-dim: #4c7fd1;
+  --danger:     #e55b5b;
+  --success:    #4ead6b;
+  --warning:    #d4a843;
+  --radius:     6px;
+  --font:       'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono:       'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+
+  --nav-width:       64px;
+  --nav-width-hover: 200px;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+}
+
+/* ----------------------------------------------------------------
+   Vertical nav
+   ---------------------------------------------------------------- */
+nav.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--nav-width);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.75rem 0 1rem;
+  z-index: 100;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+nav.sidebar:hover {
+  width: var(--nav-width-hover);
+}
+
+/* Logo at top */
+.nav-logo {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 1.5rem;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.nav-logo svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Divider below logo */
+.nav-divider {
+  width: 32px;
+  height: 1px;
+  background: var(--border);
+  margin-bottom: 0.75rem;
+  flex-shrink: 0;
+  transition: width 0.2s ease;
+}
+nav.sidebar:hover .nav-divider {
+  width: calc(100% - 1.5rem);
+}
+
+/* Nav items */
+.nav-items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0 0.75rem;
+}
+
+.nav-item a {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.5rem;
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text-dim);
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.nav-item a:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.nav-item a.active {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.nav-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.nav-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+nav.sidebar:hover .nav-label {
+  opacity: 1;
+}
+
+/* Bottom section (settings, user, etc.) */
+.nav-bottom {
+  margin-top: auto;
+  width: 100%;
+  padding: 0 0.75rem 0.5rem;
+}
+
+/* ----------------------------------------------------------------
+   Main content area
+   ---------------------------------------------------------------- */
+main.content {
+  margin-left: var(--nav-width);
+  flex: 1;
+  min-height: 100vh;
+  transition: margin-left 0.2s ease;
+}

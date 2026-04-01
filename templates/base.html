@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+  <nav class="sidebar">
+    <!-- Logo — replace the SVG below with your custom logo -->
+    <div class="nav-logo">
+      {% block logo %}
+      <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Placeholder: replace with your SVG paths -->
+        <rect x="2" y="2" width="32" height="32" rx="8"
+              stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.13"/>
+        <path d="M12 18h12M18 12v12" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round"/>
+      </svg>
+      {% endblock %}
+    </div>
+
+    <div class="nav-divider"></div>
+
+    <ul class="nav-items">
+      <li class="nav-item">
+        <a href="/dashboard" class="{% block nav_active_home %}{% endblock %}">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          </span>
+          <span class="nav-label">Home</span>
+        </a>
+      </li>
+
+      <li class="nav-item">
+        <a href="/dashboard/vessels" class="{% block nav_active_vessels %}{% endblock %}">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24"><path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1 .6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M19.38 20A11.6 11.6 0 0 0 21 14l-9-4-9 4c0 2.9.94 5.34 2.81 7.76"/><path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6"/><path d="M12 10v4"/><path d="M12 2v3"/></svg>
+          </span>
+          <span class="nav-label">Vessels</span>
+        </a>
+      </li>
+
+      <li class="nav-item">
+        <a href="/dashboard/satellite" class="{% block nav_active_satellite %}{% endblock %}">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24"><path d="M13 7 9 3 5 7l4 4"/><path d="m17 11 4 4-4 4-4-4"/><path d="m8 12 4 4 6-6-4-4Z"/><path d="m16 8 3-3"/><path d="M9 21a6 6 0 0 0-6-6"/></svg>
+          </span>
+          <span class="nav-label">Satellite</span>
+        </a>
+      </li>
+
+      <li class="nav-item">
+        <a href="/dashboard/data" class="{% block nav_active_data %}{% endblock %}">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+          </span>
+          <span class="nav-label">Data</span>
+        </a>
+      </li>
+    </ul>
+
+  </nav>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

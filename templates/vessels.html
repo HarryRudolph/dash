@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Vessels{% endblock %}
+
+{% block nav_active_vessels %}active{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/static/css/vessels.css">
+{% endblock %}
+
+{% block content %}
+<div class="search-page">
+  <h1>Vessel Search</h1>
+  <p>Enter an MMSI to view vessel details.</p>
+  <form class="search-form" onsubmit="goToVessel(event)">
+    <input type="text" id="mmsi-input" placeholder="e.g. 123456789" pattern="\d{9}" maxlength="9" required>
+    <button type="submit">Search</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function goToVessel(e) {
+  e.preventDefault();
+  const mmsi = document.getElementById('mmsi-input').value.trim();
+  if (mmsi) window.location.href = `/dashboard/vessel_info/${mmsi}`;
+}
+</script>
+{% endblock %}
