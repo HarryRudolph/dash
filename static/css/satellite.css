@@ -105,12 +105,31 @@
   display: flex;
   flex-direction: column;
 }
+.passes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
 .passes-card h2 {
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-dim);
-  margin-bottom: 0.75rem;
+}
+.pass-reset-btn {
+  padding: 0.25rem 0.6rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.pass-reset-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
 }
 
 .pass-list {
@@ -127,6 +146,13 @@
   border-bottom: 1px solid var(--border);
 }
 .pass-item:last-child { border-bottom: none; }
+.pass-item.active {
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  margin: 0 -0.5rem;
+  padding-left: 1.1rem;
+  padding-right: 0.5rem;
+}
 
 .pass-imaging-dot {
   width: 8px; height: 8px;

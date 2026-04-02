@@ -63,7 +63,7 @@
         If satvis is not deployed, a placeholder is shown instead.
       #}
       <iframe id="satvis-frame"
-              src="/satvis/?gs={{ sensor.lat }},{{ sensor.lon }}&layers={{ satvis_layer }}&elements=Point,Label,Orbit"
+              src="/satvis/?gs={{ sensor.lat }},{{ sensor.lon }}&layers={{ satvis_layer }}&tags={{ satvis_config.defaultTags }}&elements=Point,Label,Orbit"
               style="display:none;"></iframe>
       <div class="globe-placeholder" id="globe-placeholder">
         Satvis not loaded — place built dist/ in static/satvis/
@@ -71,7 +71,10 @@
     </div>
 
     <div class="passes-card">
-      <h2>Recent Passes</h2>
+      <div class="passes-header">
+        <h2>Recent Passes</h2>
+        <button class="pass-reset-btn" id="pass-reset-btn" onclick="resetSatvis()" style="display:none;">Show all</button>
+      </div>
       <div class="pass-list" id="pass-list">
         <div class="pass-loading"><div class="spinner"></div> Loading…</div>
       </div>
@@ -86,6 +89,7 @@
   const SENSOR_LAT = {{ sensor.lat }};
   const SENSOR_LON = {{ sensor.lon }};
   const SATVIS_LAYER = "{{ satvis_layer }}";
+  const DEFAULT_TAGS = "{{ satvis_config.defaultTags }}";
 
   // -- Satvis iframe detection -----------------------------------------------
   const frame = document.getElementById('satvis-frame');
@@ -161,11 +165,22 @@
           <div class="pass-duration">${dur}</div>
         </div>`;
 
-      // Click to scrub satvis to this pass time
+      // Click to show only this satellite at the pass time
       el.style.cursor = 'pointer';
-      el.addEventListener('click', () => {
-        const t = new Date(p.pass_start).toISOString();
-        frame.src = `/satvis/?gs=${SENSOR_LAT},${SENSOR_LON}&layers=${SATVIS_LAYER}&elements=Point,Label,Orbit&time=${t}`;
+      el.addEventListener('click', function() {
+        // Highlight active pass
+        container.querySelectorAll('.pass-item.active').forEach(function(a) { a.classList.remove('active'); });
+        el.classList.add('active');
+        document.getElementById('pass-reset-btn').style.display = '';
+
+        var t = new Date(p.pass_start).toISOString();
+        var satName = p.satellite.replace(/ /g, '~');
+        frame.src = '/satvis/?gs=' + SENSOR_LAT + ',' + SENSOR_LON +
+          '&layers=' + SATVIS_LAYER +
+          '&elements=Point,Label,Orbit' +
+          '&sats=' + encodeURIComponent(satName) +
+          '&track=' + encodeURIComponent(satName) +
+          '&time=' + t;
       });
 
       container.appendChild(el);
@@ -202,6 +217,15 @@
       return new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
     } catch { return iso; }
   }
+
+  window.resetSatvis = function() {
+    frame.src = '/satvis/?gs=' + SENSOR_LAT + ',' + SENSOR_LON +
+      '&layers=' + SATVIS_LAYER +
+      '&tags=' + DEFAULT_TAGS +
+      '&elements=Point,Label,Orbit';
+    document.querySelectorAll('.pass-item.active').forEach(function(a) { a.classList.remove('active'); });
+    document.getElementById('pass-reset-btn').style.display = 'none';
+  };
 
   load();
 })();

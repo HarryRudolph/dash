@@ -4,9 +4,368 @@
 
 {% block nav_active_home %}active{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="/static/lib/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/css/home.css">
+{% endblock %}
+
 {% block content %}
-<div style="padding: 2rem;">
-  <h1 style="font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem;">Dashboard</h1>
-  <p style="color: var(--text-dim); font-size: 0.9rem;">Welcome. Select an item from the sidebar to get started.</p>
+<div class="dashboard-page">
+
+  <!-- Tracking panel -->
+  <div class="tracking-panel">
+    <div class="panel-header">
+      <h2>Track Vessels</h2>
+      <span class="vessel-count" id="vessel-count">0 / 20</span>
+    </div>
+
+    <form class="mmsi-form" onsubmit="addMmsi(event)">
+      <input type="text" id="mmsi-input" placeholder="MMSI (9 digits)" pattern="\d{9}" maxlength="9">
+      <button type="submit" title="Add MMSI">+</button>
+    </form>
+
+    <button class="bulk-btn" onclick="openBulkModal()">Bulk add&hellip;</button>
+
+    <div class="vessel-list" id="vessel-list">
+      <p class="empty-msg" id="empty-msg">No vessels tracked.<br>Add an MMSI above to begin.</p>
+    </div>
+
+    <button class="clear-btn" id="clear-btn" onclick="clearAll()" style="display:none;">Clear all</button>
+  </div>
+
+  <!-- Map -->
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div class="status-bar" id="status-bar">
+      <span id="status-text">Waiting for vessels&hellip;</span>
+    </div>
+  </div>
+
 </div>
+
+<!-- Bulk add modal -->
+<div class="modal-backdrop" id="bulk-modal" onclick="closeBulkModal(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <h3>Bulk Add MMSIs</h3>
+    <p>Paste MMSIs separated by commas, spaces, or newlines.</p>
+    <textarea id="bulk-textarea" rows="6" placeholder="123456789, 987654321&#10;246813579"></textarea>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeBulkModal()">Cancel</button>
+      <button class="modal-confirm" onclick="bulkAdd()">Add</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/lib/leaflet/leaflet.js"></script>
+<script>
+(function () {
+  const MAX = 20;
+  const POLL_INTERVAL = 15000;
+  const STORAGE_KEY = 'dashboard_tracked_mmsis';
+
+  // State
+  let tracked = loadTracked();
+  let vesselData = {};
+  let markers = {};
+  let trails = {};
+  let pollTimer = null;
+  let lastUpdate = null;
+
+  // Map setup
+  var tileUrl = '{{ tile_server.url }}' || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  var tileCredit = '{{ tile_server.credit }}' || '&copy; OpenStreetMap contributors';
+  var tileMaxZoom = {{ tile_server.maximumLevel }} || 19;
+
+  const map = L.map('map', {zoomControl: true}).setView([{{ sensor.lat }}, {{ sensor.lon }}], 6);
+  L.tileLayer(tileUrl, {
+    attribution: tileCredit,
+    maxZoom: tileMaxZoom,
+  }).addTo(map);
+
+  // Ship icon factory
+  function shipIcon(heading) {
+    const rotation = heading != null ? heading : 0;
+    return L.divIcon({
+      className: 'ship-marker',
+      html: '<div class="ship-arrow" style="transform:rotate(' + rotation + 'deg)">' +
+            '<svg viewBox="0 0 24 32" width="18" height="24">' +
+            '<path d="M12 2 L22 28 L12 22 L2 28 Z" fill="#69a7ff" stroke="#fff" stroke-width="1.5"/>' +
+            '</svg></div>',
+      iconSize: [18, 24],
+      iconAnchor: [9, 12],
+      popupAnchor: [0, -14],
+    });
+  }
+
+  // LocalStorage
+  function loadTracked() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function saveTracked() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tracked));
+  }
+
+  // Render vessel list
+  function renderList() {
+    const list = document.getElementById('vessel-list');
+    const empty = document.getElementById('empty-msg');
+    const clearBtn = document.getElementById('clear-btn');
+    const countEl = document.getElementById('vessel-count');
+
+    countEl.textContent = tracked.length + ' / ' + MAX;
+
+    if (tracked.length === 0) {
+      empty.style.display = '';
+      clearBtn.style.display = 'none';
+      list.querySelectorAll('.vessel-item').forEach(function(el) { el.remove(); });
+      return;
+    }
+
+    empty.style.display = 'none';
+    clearBtn.style.display = '';
+
+    // Remove items no longer tracked
+    list.querySelectorAll('.vessel-item').forEach(function(el) {
+      if (!tracked.includes(el.dataset.mmsi)) el.remove();
+    });
+
+    // Add missing items
+    tracked.forEach(function(mmsi) {
+      if (list.querySelector('[data-mmsi="' + mmsi + '"]')) return;
+      var item = document.createElement('div');
+      item.className = 'vessel-item';
+      item.dataset.mmsi = mmsi;
+      var info = vesselData[mmsi];
+      var name = info ? info.name : null;
+      var flag = info ? info.flag : null;
+      item.innerHTML =
+        '<span class="vessel-dot"></span>' +
+        '<span class="vessel-label">' +
+        '<span class="vessel-name">' + (name || 'Loading\u2026') + '</span>' +
+        '<span class="vessel-mmsi">' + mmsi + (flag ? ' \u00B7 ' + flag : '') + '</span>' +
+        '</span>' +
+        '<button class="vessel-remove" onclick="removeMmsi(\'' + mmsi + '\')" title="Remove">&times;</button>';
+      item.addEventListener('click', function(e) {
+        if (e.target.closest('.vessel-remove')) return;
+        if (vesselData[mmsi]) {
+          map.setView([vesselData[mmsi].lat, vesselData[mmsi].lon], 10);
+          if (markers[mmsi]) markers[mmsi].openPopup();
+        }
+      });
+      list.appendChild(item);
+    });
+  }
+
+  // Update list item with live data
+  function updateListItem(mmsi) {
+    var el = document.querySelector('.vessel-item[data-mmsi="' + mmsi + '"]');
+    if (!el) return;
+    var info = vesselData[mmsi];
+    if (!info) return;
+    el.querySelector('.vessel-name').textContent = info.name || 'Unknown';
+    el.querySelector('.vessel-mmsi').textContent = mmsi + (info.flag ? ' \u00B7 ' + info.flag : '');
+    el.querySelector('.vessel-dot').classList.add('live');
+  }
+
+  // Map markers
+  function updateMap() {
+    // Remove markers for untracked vessels
+    Object.keys(markers).forEach(function(mmsi) {
+      if (!tracked.includes(mmsi)) {
+        map.removeLayer(markers[mmsi]);
+        delete markers[mmsi];
+        if (trails[mmsi]) { map.removeLayer(trails[mmsi]); delete trails[mmsi]; }
+      }
+    });
+
+    tracked.forEach(function(mmsi) {
+      var v = vesselData[mmsi];
+      if (!v || v.lat == null || v.lon == null) return;
+
+      // Trail
+      if (v.trail && v.trail.length > 0) {
+        var trailCoords = [{lat: v.lat, lng: v.lon}];
+        v.trail.forEach(function(p) { trailCoords.push({lat: p.lat, lng: p.lon}); });
+        if (trails[mmsi]) map.removeLayer(trails[mmsi]);
+        trails[mmsi] = L.polyline(trailCoords, {
+          color: '#4c7fd1',
+          weight: 2,
+          opacity: 0.5,
+          dashArray: '4 6',
+        }).addTo(map);
+      }
+
+      // Marker
+      var popupContent =
+        '<div class="vessel-popup">' +
+        '<strong>' + (v.name || 'Unknown') + '</strong>' +
+        (v.flag ? ' <span class="popup-flag">' + v.flag + '</span>' : '') +
+        '<div class="popup-details">' +
+        '<span>MMSI: ' + mmsi + '</span>' +
+        (v.speed != null ? '<span>Speed: ' + v.speed + ' kn</span>' : '') +
+        (v.heading != null ? '<span>Heading: ' + v.heading + '\u00B0</span>' : '') +
+        '</div>' +
+        '<a href="/dashboard/vessel_info/' + mmsi + '" class="popup-link">View details \u2192</a>' +
+        '</div>';
+
+      if (markers[mmsi]) {
+        markers[mmsi].setLatLng([v.lat, v.lon]);
+        markers[mmsi].setIcon(shipIcon(v.heading));
+        markers[mmsi].getPopup().setContent(popupContent);
+      } else {
+        markers[mmsi] = L.marker([v.lat, v.lon], {icon: shipIcon(v.heading)})
+          .bindPopup(popupContent, {className: 'dark-popup'})
+          .addTo(map);
+      }
+    });
+  }
+
+  // Poll
+  function poll() {
+    if (tracked.length === 0) {
+      updateStatus();
+      return;
+    }
+    fetch('/dashboard/positions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mmsis: tracked}),
+    })
+    .then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function(data) {
+      lastUpdate = new Date(data.updated_at);
+      (data.vessels || []).forEach(function(v) {
+        vesselData[v.mmsi] = v;
+        updateListItem(v.mmsi);
+      });
+      updateMap();
+      updateStatus();
+    })
+    .catch(function(err) {
+      console.error('Poll error:', err);
+      updateStatus();
+    });
+  }
+
+  function updateStatus() {
+    var el = document.getElementById('status-text');
+    if (tracked.length === 0) {
+      el.textContent = 'Waiting for vessels\u2026';
+      return;
+    }
+    var ago = lastUpdate ? formatAgo(lastUpdate) : 'never';
+    el.textContent = 'Tracking ' + tracked.length + ' vessel' + (tracked.length !== 1 ? 's' : '') + ' \u00B7 Updated ' + ago;
+  }
+
+  function formatAgo(date) {
+    var seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (seconds < 5) return 'just now';
+    if (seconds < 60) return seconds + 's ago';
+    return Math.floor(seconds / 60) + 'm ago';
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    poll();
+    pollTimer = setInterval(poll, POLL_INTERVAL);
+  }
+
+  // Public API
+  window.addMmsi = function(e) {
+    e.preventDefault();
+    var input = document.getElementById('mmsi-input');
+    var mmsi = input.value.trim();
+    if (!/^\d{9}$/.test(mmsi)) return;
+    if (tracked.includes(mmsi)) { input.value = ''; return; }
+    if (tracked.length >= MAX) {
+      alert('Maximum of ' + MAX + ' vessels can be tracked at once.');
+      return;
+    }
+    var wasEmpty = tracked.length === 0;
+    tracked.push(mmsi);
+    saveTracked();
+    renderList();
+    input.value = '';
+    if (wasEmpty) startPolling(); else poll();
+  };
+
+  window.removeMmsi = function(mmsi) {
+    tracked = tracked.filter(function(m) { return m !== mmsi; });
+    delete vesselData[mmsi];
+    saveTracked();
+    renderList();
+    updateMap();
+    updateStatus();
+  };
+
+  window.clearAll = function() {
+    tracked = [];
+    vesselData = {};
+    saveTracked();
+    renderList();
+    updateMap();
+    updateStatus();
+  };
+
+  window.openBulkModal = function() {
+    document.getElementById('bulk-modal').classList.add('open');
+    document.getElementById('bulk-textarea').value = '';
+    document.getElementById('bulk-textarea').focus();
+  };
+
+  window.closeBulkModal = function(e) {
+    if (e && e.target !== e.currentTarget) return;
+    document.getElementById('bulk-modal').classList.remove('open');
+  };
+
+  window.bulkAdd = function() {
+    var raw = document.getElementById('bulk-textarea').value;
+    var candidates = raw.split(/[\s,;]+/).map(function(s) { return s.trim(); }).filter(function(s) { return /^\d{9}$/.test(s); });
+    var seen = {};
+    var unique = candidates.filter(function(m) {
+      if (seen[m] || tracked.includes(m)) return false;
+      seen[m] = true;
+      return true;
+    });
+    var space = MAX - tracked.length;
+    if (space <= 0) {
+      alert('Maximum of ' + MAX + ' vessels already tracked.');
+      closeBulkModal();
+      return;
+    }
+    var toAdd = unique.slice(0, space);
+    if (toAdd.length === 0) {
+      alert('No valid new MMSIs found.');
+      return;
+    }
+    var wasEmpty = tracked.length === 0;
+    tracked = tracked.concat(toAdd);
+    saveTracked();
+    renderList();
+    closeBulkModal();
+    if (wasEmpty) startPolling(); else poll();
+    if (unique.length > space) {
+      alert('Added ' + toAdd.length + ' vessels. ' + (unique.length - space) + ' skipped (limit ' + MAX + ').');
+    }
+  };
+
+  // Tick the "Updated Xs ago" display
+  setInterval(updateStatus, 5000);
+
+  // Boot
+  renderList();
+  if (tracked.length > 0) startPolling();
+  else updateStatus();
+
+})();
+</script>
 {% endblock %}

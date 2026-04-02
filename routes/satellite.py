@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-from config import DEV_MODE, SENSOR, TILE_SERVER
+from config import DEV_MODE, SATVIS, SENSOR, TILE_SERVER
 from routes import templates
 
 router = APIRouter()
@@ -31,7 +31,7 @@ def _mock_passes():
     now = datetime.now(timezone.utc)
     return [
         {
-            "satellite": "Sentinel-1A",
+            "satellite": "SENTINEL-1A",
             "norad_id": 39634,
             "pass_start": (now - timedelta(hours=1, minutes=22)).isoformat(),
             "pass_end": (now - timedelta(hours=1, minutes=14)).isoformat(),
@@ -43,7 +43,7 @@ def _mock_passes():
             "tle_line2": "2 39634  98.1817 126.5243 0001312  91.2378 268.8946 14.59198515625012",
         },
         {
-            "satellite": "Sentinel-1B",
+            "satellite": "SENTINEL-1B",
             "norad_id": 41456,
             "pass_start": (now - timedelta(hours=3, minutes=47)).isoformat(),
             "pass_end": (now - timedelta(hours=3, minutes=40)).isoformat(),
@@ -55,7 +55,7 @@ def _mock_passes():
             "tle_line2": "2 41456  98.1812 126.4987 0001205  89.5432 270.5892 14.59197823487651",
         },
         {
-            "satellite": "COSMO-SkyMed 1",
+            "satellite": "COSMO-SKYMED 1",
             "norad_id": 31598,
             "pass_start": (now - timedelta(hours=5, minutes=10)).isoformat(),
             "pass_end": (now - timedelta(hours=5, minutes=3)).isoformat(),
@@ -67,7 +67,7 @@ def _mock_passes():
             "tle_line2": "2 31598  97.8867 164.1234 0001567  73.2145 286.9123 14.82134567891234",
         },
         {
-            "satellite": "TerraSAR-X",
+            "satellite": "TERRASAR-X",
             "norad_id": 31698,
             "pass_start": (now - timedelta(hours=8, minutes=33)).isoformat(),
             "pass_end": (now - timedelta(hours=8, minutes=27)).isoformat(),
@@ -91,7 +91,7 @@ def _mock_passes():
             "tle_line2": "2 43800  97.5234 145.6789 0001456  67.8912 292.2345 15.07234567123456",
         },
         {
-            "satellite": "Sentinel-1A",
+            "satellite": "SENTINEL-1A",
             "norad_id": 39634,
             "pass_start": (now - timedelta(hours=13, minutes=45)).isoformat(),
             "pass_end": (now - timedelta(hours=13, minutes=37)).isoformat(),
@@ -103,7 +103,7 @@ def _mock_passes():
             "tle_line2": "2 39634  98.1817 126.5243 0001312  91.2378 268.8946 14.59198515625012",
         },
         {
-            "satellite": "COSMO-SkyMed 2",
+            "satellite": "COSMO-SKYMED 2",
             "norad_id": 33412,
             "pass_start": (now - timedelta(hours=16, minutes=12)).isoformat(),
             "pass_end": (now - timedelta(hours=16, minutes=5)).isoformat(),
@@ -120,7 +120,7 @@ def _mock_passes():
 def _mock_next_pass():
     now = datetime.now(timezone.utc)
     return {
-        "satellite": "Sentinel-1B",
+        "satellite": "SENTINEL-1B",
         "norad_id": 41456,
         "predicted_start": (now + timedelta(hours=2, minutes=18)).isoformat(),
     }
@@ -130,7 +130,11 @@ def _mock_next_pass():
 async def satellite_page(request: Request):
     return templates.TemplateResponse(
         request, "satellite.html",
-        context={"sensor": SENSOR.as_dict(), "satvis_layer": TILE_SERVER.satvis_layer},
+        context={
+            "sensor": SENSOR.as_dict(),
+            "satvis_layer": TILE_SERVER.satvis_layer,
+            "satvis_config": SATVIS.as_dict(),
+        },
     )
 
 

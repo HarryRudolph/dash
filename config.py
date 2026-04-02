@@ -23,6 +23,16 @@ class SensorConfig:
 
 
 @dataclass(frozen=True)
+class SatvisConfig:
+    default_tags: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "defaultTags": self.default_tags,
+        }
+
+
+@dataclass(frozen=True)
 class TileServerConfig:
     url: str
     credit: str
@@ -52,6 +62,16 @@ class SenzingConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.api_url and self.data_source)
+
+
+@dataclass(frozen=True)
+class ElasticsearchConfig:
+    url: str
+    ais_index: str
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url)
 
 
 @dataclass(frozen=True)
@@ -86,6 +106,15 @@ SENZING = SenzingConfig(
         "SZ_ENTITY_BY_ENTITY_PATH",
         "/entity-resolution/v1/entities/{entity_id}",
     ),
+)
+
+SATVIS = SatvisConfig(
+    default_tags=os.environ.get("SATVIS_DEFAULT_TAGS", "Resource"),
+)
+
+ELASTICSEARCH = ElasticsearchConfig(
+    url=os.environ.get("ES_URL", "").rstrip("/"),
+    ais_index=os.environ.get("ES_AIS_INDEX", "ais_positions"),
 )
 
 RUNTIME = RuntimeConfig(
