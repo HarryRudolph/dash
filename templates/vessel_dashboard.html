@@ -5,7 +5,7 @@
 {% block nav_active_vessels %}active{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/css/vessel_dashboard.css">
+<link rel="stylesheet" href="/dashboard/static/css/vessel_dashboard.css">
 {% endblock %}
 
 {% block content %}
@@ -84,7 +84,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/lib/cytoscape.min.js"></script>
+<script src="/dashboard/static/lib/cytoscape.min.js"></script>
 <script>
 (function() {
   const MMSI = "{{ mmsi }}";

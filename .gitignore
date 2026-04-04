@@ -35,11 +35,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-satvis/
 
-# Satvis generated artifacts that are useful locally but noisy in git
+# Satvis: the built dist/ in static/satvis/ IS tracked.
+# Only ignore source maps and seeded TLE data.
 static/satvis/**/*.map
 
 # Seeded TLE group data is deployment/runtime data, not source.
-# Keep the directory via the committed .gitignore file already in place.
 static/satvis/data/tle/groups/*.txt

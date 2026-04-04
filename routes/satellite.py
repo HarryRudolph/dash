@@ -2,14 +2,6 @@
 Satellite Pass Routes
 ---------------------
 SAR satellite overhead detection and pass history.
-Fill in query logic where marked with # TODO.
-
-Data model (from Elasticsearch):
-  - norad_id: NORAD catalog number
-  - satellite: display name
-  - detection_time: ISO timestamp
-  - tle_line1 / tle_line2: TLE at time of detection
-  - max_elevation, imaging window, etc.
 
 Mounted with prefix="/dashboard" in app.py.
 """
@@ -129,8 +121,9 @@ def _mock_next_pass():
 @router.get("/satellite")
 async def satellite_page(request: Request):
     return templates.TemplateResponse(
-        request, "satellite.html",
-        context={
+        "satellite.html",
+        {
+            "request": request,
             "sensor": SENSOR.as_dict(),
             "satvis_layer": TILE_SERVER.satvis_layer,
             "satvis_config": SATVIS.as_dict(),
@@ -145,15 +138,6 @@ async def satellite_passes(
     """
     Returns SAR satellite passes detected at the sensor within the
     given time window (default last 24h).
-
-    Each pass has:
-      - satellite: display name
-      - norad_id: NORAD catalog number
-      - pass_start / pass_end: ISO timestamps of the overhead window
-      - max_elevation: peak elevation angle in degrees
-      - imaging: whether imaging was detected
-      - imaging_start / imaging_end: imaging window timestamps (null if no imaging)
-      - tle_line1 / tle_line2: TLE at time of detection
     """
 
     if DEV_MODE:
@@ -165,17 +149,7 @@ async def satellite_passes(
         })
 
     # TODO: query Elasticsearch for detections within the last `hours` hours
-    # Example query shape:
-    #   {
-    #     "query": { "range": { "detection_time": { "gte": f"now-{hours}h" } } },
-    #     "sort": [{ "detection_time": "desc" }],
-    #     "_source": ["norad_id", "satellite", "detection_time", "max_elevation",
-    #                  "imaging", "imaging_start", "imaging_end",
-    #                  "tle_line1", "tle_line2"]
-    #   }
     passes = []
-
-    # TODO: predict next pass from TLE propagation or lookup
     next_pass = None
 
     return JSONResponse({

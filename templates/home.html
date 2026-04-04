@@ -5,8 +5,20 @@
 {% block nav_active_home %}active{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/lib/leaflet/leaflet.css">
-<link rel="stylesheet" href="/static/css/home.css">
+<link rel="stylesheet" href="/dashboard/static/lib/leaflet/leaflet.css">
+<link rel="stylesheet" href="/dashboard/static/css/home.css">
+<style>
+  .vessel-item.changed { animation: flash-change 1.5s ease-out; }
+  .ship-marker.changed svg path { animation: marker-flash 1.5s ease-out; }
+  @keyframes flash-change {
+    0%   { background: rgba(105, 167, 255, 0.3); }
+    100% { background: transparent; }
+  }
+  @keyframes marker-flash {
+    0%   { fill: #ffd96e; }
+    100% { fill: #69a7ff; }
+  }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -59,37 +71,40 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/lib/leaflet/leaflet.js"></script>
+<script src="/dashboard/static/lib/leaflet/leaflet.js"></script>
 <script>
 (function () {
-  const MAX = 20;
-  const POLL_INTERVAL = 15000;
-  const STORAGE_KEY = 'dashboard_tracked_mmsis';
+  var MAX = 20;
+  var POLL_INTERVAL = 120000; // 2 minutes
+  var STORAGE_KEY = 'dashboard_tracked_mmsis';
 
   // State
-  let tracked = loadTracked();
-  let vesselData = {};
-  let markers = {};
-  let trails = {};
-  let pollTimer = null;
-  let lastUpdate = null;
+  var tracked = loadTracked();
+  var vesselData = {};
+  var markers = {};
+  var trails = {};
+  var pollTimer = null;
+  var lastUpdate = null;
 
-  // Map setup
-  var tileUrl = '{{ tile_server.url }}' || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-  var tileCredit = '{{ tile_server.credit }}' || '&copy; OpenStreetMap contributors';
+  // Map setup — slippy tile format {z}/{y}/{x} from env, no attribution needed
+  var tileUrl = '{{ tile_server.url }}';
   var tileMaxZoom = {{ tile_server.maximumLevel }} || 19;
 
-  const map = L.map('map', {zoomControl: true}).setView([{{ sensor.lat }}, {{ sensor.lon }}], 6);
-  L.tileLayer(tileUrl, {
-    attribution: tileCredit,
-    maxZoom: tileMaxZoom,
-  }).addTo(map);
+  var map = L.map('map', {zoomControl: true}).setView([51.5, -1.0], 6);
+  if (tileUrl) {
+    L.tileLayer(tileUrl, { maxZoom: tileMaxZoom }).addTo(map);
+  } else {
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+    }).addTo(map);
+  }
 
   // Ship icon factory
-  function shipIcon(heading) {
-    const rotation = heading != null ? heading : 0;
+  function shipIcon(heading, changed) {
+    var rotation = heading != null ? heading : 0;
+    var cls = 'ship-marker' + (changed ? ' changed' : '');
     return L.divIcon({
-      className: 'ship-marker',
+      className: cls,
       html: '<div class="ship-arrow" style="transform:rotate(' + rotation + 'deg)">' +
             '<svg viewBox="0 0 24 32" width="18" height="24">' +
             '<path d="M12 2 L22 28 L12 22 L2 28 Z" fill="#69a7ff" stroke="#fff" stroke-width="1.5"/>' +
@@ -103,7 +118,7 @@
   // LocalStorage
   function loadTracked() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      var raw = localStorage.getItem(STORAGE_KEY);
       return raw ? JSON.parse(raw) : [];
     } catch (e) { return []; }
   }
@@ -111,19 +126,31 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tracked));
   }
 
+  // Detect if a vessel's data has changed
+  function hasChanged(oldData, newData) {
+    if (!oldData) return true;
+    return oldData.lat !== newData.lat ||
+           oldData.lon !== newData.lon ||
+           oldData.speed !== newData.speed ||
+           oldData.heading !== newData.heading ||
+           oldData.name !== newData.name ||
+           oldData.flag !== newData.flag;
+  }
+
   // Render vessel list
   function renderList() {
-    const list = document.getElementById('vessel-list');
-    const empty = document.getElementById('empty-msg');
-    const clearBtn = document.getElementById('clear-btn');
-    const countEl = document.getElementById('vessel-count');
+    var list = document.getElementById('vessel-list');
+    var empty = document.getElementById('empty-msg');
+    var clearBtn = document.getElementById('clear-btn');
+    var countEl = document.getElementById('vessel-count');
 
     countEl.textContent = tracked.length + ' / ' + MAX;
 
     if (tracked.length === 0) {
       empty.style.display = '';
       clearBtn.style.display = 'none';
-      list.querySelectorAll('.vessel-item').forEach(function(el) { el.remove(); });
+      var items = list.querySelectorAll('.vessel-item');
+      for (var i = 0; i < items.length; i++) items[i].parentNode.removeChild(items[i]);
       return;
     }
 
@@ -131,13 +158,17 @@
     clearBtn.style.display = '';
 
     // Remove items no longer tracked
-    list.querySelectorAll('.vessel-item').forEach(function(el) {
-      if (!tracked.includes(el.dataset.mmsi)) el.remove();
-    });
+    var existing = list.querySelectorAll('.vessel-item');
+    for (var i = 0; i < existing.length; i++) {
+      if (tracked.indexOf(existing[i].dataset.mmsi) === -1) {
+        existing[i].parentNode.removeChild(existing[i]);
+      }
+    }
 
     // Add missing items
-    tracked.forEach(function(mmsi) {
-      if (list.querySelector('[data-mmsi="' + mmsi + '"]')) return;
+    for (var j = 0; j < tracked.length; j++) {
+      var mmsi = tracked[j];
+      if (list.querySelector('[data-mmsi="' + mmsi + '"]')) continue;
       var item = document.createElement('div');
       item.className = 'vessel-item';
       item.dataset.mmsi = mmsi;
@@ -151,19 +182,21 @@
         '<span class="vessel-mmsi">' + mmsi + (flag ? ' \u00B7 ' + flag : '') + '</span>' +
         '</span>' +
         '<button class="vessel-remove" onclick="removeMmsi(\'' + mmsi + '\')" title="Remove">&times;</button>';
-      item.addEventListener('click', function(e) {
-        if (e.target.closest('.vessel-remove')) return;
-        if (vesselData[mmsi]) {
-          map.setView([vesselData[mmsi].lat, vesselData[mmsi].lon], 10);
-          if (markers[mmsi]) markers[mmsi].openPopup();
-        }
-      });
+      (function(m) {
+        item.addEventListener('click', function(e) {
+          if (e.target.closest && e.target.closest('.vessel-remove')) return;
+          if (vesselData[m]) {
+            map.setView([vesselData[m].lat, vesselData[m].lon], 10);
+            if (markers[m]) markers[m].openPopup();
+          }
+        });
+      })(mmsi);
       list.appendChild(item);
-    });
+    }
   }
 
-  // Update list item with live data
-  function updateListItem(mmsi) {
+  // Update list item with live data + flash on change
+  function updateListItem(mmsi, changed) {
     var el = document.querySelector('.vessel-item[data-mmsi="' + mmsi + '"]');
     if (!el) return;
     var info = vesselData[mmsi];
@@ -171,27 +204,37 @@
     el.querySelector('.vessel-name').textContent = info.name || 'Unknown';
     el.querySelector('.vessel-mmsi').textContent = mmsi + (info.flag ? ' \u00B7 ' + info.flag : '');
     el.querySelector('.vessel-dot').classList.add('live');
+
+    if (changed) {
+      el.classList.remove('changed');
+      void el.offsetWidth; // force reflow to restart animation
+      el.classList.add('changed');
+    }
   }
 
   // Map markers
-  function updateMap() {
+  function updateMap(changedMmsis) {
     // Remove markers for untracked vessels
-    Object.keys(markers).forEach(function(mmsi) {
-      if (!tracked.includes(mmsi)) {
-        map.removeLayer(markers[mmsi]);
-        delete markers[mmsi];
-        if (trails[mmsi]) { map.removeLayer(trails[mmsi]); delete trails[mmsi]; }
+    for (var m in markers) {
+      if (tracked.indexOf(m) === -1) {
+        map.removeLayer(markers[m]);
+        delete markers[m];
+        if (trails[m]) { map.removeLayer(trails[m]); delete trails[m]; }
       }
-    });
+    }
 
-    tracked.forEach(function(mmsi) {
+    for (var j = 0; j < tracked.length; j++) {
+      var mmsi = tracked[j];
       var v = vesselData[mmsi];
-      if (!v || v.lat == null || v.lon == null) return;
+      if (!v || v.lat == null || v.lon == null) continue;
+      var isChanged = changedMmsis && changedMmsis.indexOf(mmsi) !== -1;
 
       // Trail
       if (v.trail && v.trail.length > 0) {
         var trailCoords = [{lat: v.lat, lng: v.lon}];
-        v.trail.forEach(function(p) { trailCoords.push({lat: p.lat, lng: p.lon}); });
+        for (var t = 0; t < v.trail.length; t++) {
+          trailCoords.push({lat: v.trail[t].lat, lng: v.trail[t].lon});
+        }
         if (trails[mmsi]) map.removeLayer(trails[mmsi]);
         trails[mmsi] = L.polyline(trailCoords, {
           color: '#4c7fd1',
@@ -216,14 +259,14 @@
 
       if (markers[mmsi]) {
         markers[mmsi].setLatLng([v.lat, v.lon]);
-        markers[mmsi].setIcon(shipIcon(v.heading));
+        markers[mmsi].setIcon(shipIcon(v.heading, isChanged));
         markers[mmsi].getPopup().setContent(popupContent);
       } else {
-        markers[mmsi] = L.marker([v.lat, v.lon], {icon: shipIcon(v.heading)})
+        markers[mmsi] = L.marker([v.lat, v.lon], {icon: shipIcon(v.heading, false)})
           .bindPopup(popupContent, {className: 'dark-popup'})
           .addTo(map);
       }
-    });
+    }
   }
 
   // Poll
@@ -243,11 +286,16 @@
     })
     .then(function(data) {
       lastUpdate = new Date(data.updated_at);
-      (data.vessels || []).forEach(function(v) {
+      var changedMmsis = [];
+      var vessels = data.vessels || [];
+      for (var i = 0; i < vessels.length; i++) {
+        var v = vessels[i];
+        var changed = hasChanged(vesselData[v.mmsi], v);
         vesselData[v.mmsi] = v;
-        updateListItem(v.mmsi);
-      });
-      updateMap();
+        updateListItem(v.mmsi, changed);
+        if (changed) changedMmsis.push(v.mmsi);
+      }
+      updateMap(changedMmsis);
       updateStatus();
     })
     .catch(function(err) {
@@ -285,7 +333,7 @@
     var input = document.getElementById('mmsi-input');
     var mmsi = input.value.trim();
     if (!/^\d{9}$/.test(mmsi)) return;
-    if (tracked.includes(mmsi)) { input.value = ''; return; }
+    if (tracked.indexOf(mmsi) !== -1) { input.value = ''; return; }
     if (tracked.length >= MAX) {
       alert('Maximum of ' + MAX + ' vessels can be tracked at once.');
       return;
@@ -303,7 +351,7 @@
     delete vesselData[mmsi];
     saveTracked();
     renderList();
-    updateMap();
+    updateMap([]);
     updateStatus();
   };
 
@@ -312,7 +360,7 @@
     vesselData = {};
     saveTracked();
     renderList();
-    updateMap();
+    updateMap([]);
     updateStatus();
   };
 
@@ -332,7 +380,7 @@
     var candidates = raw.split(/[\s,;]+/).map(function(s) { return s.trim(); }).filter(function(s) { return /^\d{9}$/.test(s); });
     var seen = {};
     var unique = candidates.filter(function(m) {
-      if (seen[m] || tracked.includes(m)) return false;
+      if (seen[m] || tracked.indexOf(m) !== -1) return false;
       seen[m] = true;
       return true;
     });

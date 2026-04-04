@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from config import SENZING
@@ -78,8 +78,10 @@ class SenzingClient:
         })
 
         relative_path = path_template.format_map(template_values)
-        base_url = f"{self.config.api_url}/"
-        url = urljoin(base_url, relative_path.lstrip("/"))
+        # Build URL by direct concatenation to avoid urljoin interpreting
+        # the path as a filesystem path (seen on Git Bash / MSYS where
+        # leading '/' is rewritten to 'C:/Program Files/Git/...').
+        url = self.config.api_url.rstrip("/") + "/" + relative_path.lstrip("/")
 
         headers = {"Accept": "application/json"}
         if self.config.auth_token:

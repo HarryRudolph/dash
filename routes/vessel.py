@@ -1,9 +1,6 @@
 """
 Vessel Dashboard Routes
 -----------------------
-Boilerplate route stubs. Fill in your ES/Senzing/Mongo query logic
-where marked with # TODO.
-
 Mounted with prefix="/dashboard" in app.py, so all paths below
 are relative to /dashboard.
 """
@@ -12,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from routes import templates
+from services.elasticsearch import get_vessel_identity, get_vessel_track
+from services.mongo import get_vessel_events
 from services.senzing import (
     SenzingClient,
     SenzingError,
@@ -55,7 +54,8 @@ def _stub_network(mmsi: str) -> dict:
 @router.get("/vessel_info/{mmsi}", response_class=HTMLResponse)
 async def vessel_dashboard(request: Request, mmsi: str):
     return templates.TemplateResponse(
-        request, "vessel_dashboard.html", context={"mmsi": mmsi},
+        "vessel_dashboard.html",
+        {"request": request, "mmsi": mmsi},
     )
 
 
@@ -63,15 +63,10 @@ async def vessel_dashboard(request: Request, mmsi: str):
 # Tab 1 — Overview: AIS identity + ownership summary from ES
 # ---------------------------------------------------------------------------
 @router.get("/vessel_info/{mmsi}/overview")
-async def vessel_overview(mmsi: str):
-    """
-    Returns JSON with two keys:
-      - identity: AIS static fields
-      - ownership: summary from your ownership ES index
+async def vessel_overview(request: Request, mmsi: str):
+    es = request.app.state.es
 
-    The frontend renders these into cards on the Overview tab.
-    """
-    # TODO: query your AIS index for static fields
+    ais = await get_vessel_identity(es, mmsi)
     identity = {
         "mmsi": mmsi,
         "imo": None,
@@ -79,11 +74,19 @@ async def vessel_overview(mmsi: str):
         "flag": None,
         "vessel_type": None,
         "length": None,
-        "beam": None,
-        "draught": None,
         "destination": None,
         "last_seen": None,
     }
+    if ais:
+        identity.update({
+            "imo": ais.get("imo"),
+            "name": ais.get("name"),
+            "flag": ais.get("flag"),
+            "vessel_type": ais.get("vessel_type"),
+            "length": ais.get("length"),
+            "destination": ais.get("destination"),
+            "last_seen": ais.get("last_seen"),
+        })
 
     # TODO: query your ownership ES index
     ownership = {
@@ -98,16 +101,38 @@ async def vessel_overview(mmsi: str):
 
 
 # ---------------------------------------------------------------------------
-# Tab 1 — Map: last 5 days AIS track (Folium HTML)
+# Tab 1 — Map: last 5 days AIS track
 # ---------------------------------------------------------------------------
 @router.get("/vessel_info/{mmsi}/map", response_class=HTMLResponse)
-async def vessel_map(mmsi: str):
-    """
-    Returns raw HTML (Folium export) to embed in an iframe.
-    """
-    # TODO: query ES for last 5 days of AIS, build Folium map
-    # return HTMLResponse(folium_map._repr_html_())
-    return HTMLResponse("<p>Map placeholder</p>")
+async def vessel_map(request: Request, mmsi: str):
+    es = request.app.state.es
+    points = await get_vessel_track(es, mmsi, hours=120)
+
+    if not points:
+        return HTMLResponse("<p style='color:#8d99ab;padding:2rem;'>No track data available</p>")
+
+    # Build a simple Leaflet map inline
+    lats = [p["lat"] for p in points]
+    lons = [p["lon"] for p in points]
+    center_lat = sum(lats) / len(lats)
+    center_lon = sum(lons) / len(lons)
+    coords_js = ",".join(f"[{p['lat']},{p['lon']}]" for p in points)
+    last = points[-1]
+
+    html = f"""<!DOCTYPE html>
+<html><head>
+<link rel="stylesheet" href="/dashboard/static/lib/leaflet/leaflet.css">
+<script src="/dashboard/static/lib/leaflet/leaflet.js"></script>
+<style>body{{margin:0}}#m{{width:100%;height:100vh}}</style>
+</head><body>
+<div id="m"></div>
+<script>
+var m=L.map('m').setView([{center_lat},{center_lon}],8);
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:18}}).addTo(m);
+L.polyline([{coords_js}],{{color:'#4c7fd1',weight:2}}).addTo(m);
+L.circleMarker([{last['lat']},{last['lon']}],{{radius:5,color:'#69a7ff',fillOpacity:1}}).addTo(m);
+</script></body></html>"""
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------
@@ -115,18 +140,6 @@ async def vessel_map(mmsi: str):
 # ---------------------------------------------------------------------------
 @router.get("/vessel_info/{mmsi}/network")
 async def vessel_network(mmsi: str):
-    """
-    Returns Cytoscape.js elements format:
-    {
-        "elements": {
-            "nodes": [{"data": {"id": "n1", "label": "...", "type": "vessel|person|company"}}],
-            "edges": [{"data": {"source": "n1", "target": "n2", "label": "owns"}}]
-        }
-    }
-
-    Transform your Senzing response into this shape.
-    The frontend renders it with Cytoscape.js.
-    """
     if not senzing_client.enabled:
         return JSONResponse(_stub_network(mmsi))
 
@@ -155,9 +168,6 @@ async def vessel_network(mmsi: str):
 
 @router.get("/vessel_info/{mmsi}/network/expand/{entity_id}")
 async def vessel_network_expand(mmsi: str, entity_id: int):
-    """
-    Expands the selected entity by fetching its related entities from Senzing.
-    """
     if not senzing_client.enabled:
         return JSONResponse({
             "elements": {"nodes": [], "edges": []},
@@ -194,20 +204,9 @@ async def vessel_network_expand(mmsi: str, entity_id: int):
 # Tab 3 — Events: recent behavioural events from Mongo
 # ---------------------------------------------------------------------------
 @router.get("/vessel_info/{mmsi}/events")
-async def vessel_events(mmsi: str):
-    """
-    Returns JSON array of recent events. Frontend renders the table.
-    (Returning JSON rather than pre-rendered HTML gives you sorting/filtering
-    on the client side later.)
-
-    Each event should have at minimum:
-      - timestamp, event_type, summary
-    Add whatever other fields are useful.
-    """
-    # TODO: query Mongo for last 10 events
-    events = [
-        # {"timestamp": "2025-03-28T14:32:00Z", "event_type": "dark_period", "summary": "AIS off for 6h", "details": {}},
-    ]
+async def vessel_events(request: Request, mmsi: str):
+    db = request.app.state.db
+    events = get_vessel_events(db, mmsi, limit=10)
     return JSONResponse(events)
 
 
@@ -216,16 +215,6 @@ async def vessel_events(mmsi: str):
 # ---------------------------------------------------------------------------
 @router.get("/vessel_info/{mmsi}/pattern")
 async def vessel_pattern(mmsi: str):
-    """
-    Returns the 2D histogram as JSON for client-side rendering.
-
-    Shape:
-    {
-        "x_labels": ["Mon", "Tue", ...],       # days
-        "y_labels": ["00:00", "01:00", ...],    # hour bins
-        "values": [[0, 3, 1, ...], ...]         # counts, row per y-bin
-    }
-    """
     # TODO: query ES for last year of AIS, compute histogram
     pattern = {
         "x_labels": [],

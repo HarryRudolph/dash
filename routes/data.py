@@ -2,7 +2,6 @@
 Data Feed Routes
 ----------------
 Status and health endpoints for each data source.
-Fill in query logic where marked with # TODO.
 
 Mounted with prefix="/dashboard" in app.py.
 """
@@ -11,17 +10,20 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from routes import templates
+from services.elasticsearch import get_index_stats
+from services.mongo import get_collection_stats, EVENTS_COLLECTION, PORT_CALLS_COLLECTION
+from services.postgres import get_table_stats
 
 router = APIRouter()
 
 
 @router.get("/data")
 async def data_page(request: Request):
-    return templates.TemplateResponse(request, "data.html")
+    return templates.TemplateResponse("data.html", {"request": request})
 
 
 @router.get("/data/feeds")
-async def feed_status():
+async def feed_status(request: Request):
     """
     Returns a flat list of feeds grouped by source. Each feed has:
       - name: display name (e.g. "AIS Positions")
@@ -33,92 +35,76 @@ async def feed_status():
       - history: list of {timestamp, count} for volume over time (last 24h, hourly)
     """
 
+    es = request.app.state.es
+    db = request.app.state.db
+    pg = request.app.state.pg
+
     feeds = []
 
     # -- Elasticsearch indices -----------------------------------------------
-    # TODO: for each index, GET /_cat/indices/<index>?format=json for doc count,
-    #       GET /_cluster/health for status, query for max(@timestamp) for last_record,
-    #       date_histogram agg for history
-
+    es_ais = await get_index_stats(es, "ais_positions")
     feeds.append({
         "name": "AIS Positions",
         "source": "elasticsearch",
         "key": "es_ais_positions",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
-        "history": [],
+        **es_ais,
     })
 
+    es_voyages = await get_index_stats(es, "ais_voyages")
     feeds.append({
         "name": "AIS Voyages",
         "source": "elasticsearch",
         "key": "es_ais_voyages",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
-        "history": [],
+        **es_voyages,
     })
 
+    es_ownership = await get_index_stats(es, "vessel_ownership")
     feeds.append({
         "name": "Vessel Ownership",
         "source": "elasticsearch",
         "key": "es_vessel_ownership",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
-        "history": [],
+        **es_ownership,
     })
 
     # -- PostgreSQL tables ---------------------------------------------------
-    # TODO: check connection, SELECT count(*) and max(updated_at) per table
-
+    pg_registry = get_table_stats(pg, "vessel_registry")
     feeds.append({
         "name": "Vessel Registry",
         "source": "postgres",
         "key": "pg_vessel_registry",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
+        **pg_registry,
         "history": [],
     })
 
+    pg_sanctions = get_table_stats(pg, "sanctions")
     feeds.append({
         "name": "Sanctions Lists",
         "source": "postgres",
         "key": "pg_sanctions",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
+        **pg_sanctions,
         "history": [],
     })
 
     # -- MongoDB collections -------------------------------------------------
-    # TODO: db.collection.estimated_document_count(), check connection
-
+    mongo_events = get_collection_stats(db, EVENTS_COLLECTION)
     feeds.append({
         "name": "Behavioural Events",
         "source": "mongodb",
         "key": "mongo_events",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
+        **mongo_events,
         "history": [],
     })
 
+    mongo_ports = get_collection_stats(db, PORT_CALLS_COLLECTION)
     feeds.append({
         "name": "Port Calls",
         "source": "mongodb",
         "key": "mongo_port_calls",
-        "status": "unknown",
-        "total_count": None,
-        "last_record": None,
+        **mongo_ports,
         "history": [],
     })
 
     # -- Senzing -------------------------------------------------------------
-    # TODO: G2Engine.stats() or equivalent health check
-
     feeds.append({
         "name": "Entity Resolution",
         "source": "senzing",

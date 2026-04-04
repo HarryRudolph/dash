@@ -13,10 +13,9 @@ from pydantic import BaseModel
 
 from config import DEV_MODE, SENSOR, TILE_SERVER
 from routes import templates
-from services.elasticsearch import ElasticsearchClient, ElasticsearchError
+from services.elasticsearch import ElasticsearchError, get_latest_positions
 
 router = APIRouter()
-es_client = ElasticsearchClient()
 
 _MAX_MMSIS = 20
 _MMSI_RE = re.compile(r"^\d{9}$")
@@ -41,7 +40,7 @@ def _deterministic_float(seed: str, low: float, high: float) -> float:
     return low + (h / 0xFFFFFFFF) * (high - low)
 
 
-def _mock_positions(mmsis: list[str]) -> list[dict]:
+def _mock_positions(mmsis: list) -> list:
     """Generate moving mock vessel positions seeded by MMSI + current minute."""
     now = datetime.now(timezone.utc)
     minute_bucket = now.strftime("%Y%m%d%H%M")
@@ -95,26 +94,26 @@ def _mock_positions(mmsis: list[str]) -> list[dict]:
 
 
 class PositionsRequest(BaseModel):
-    mmsis: list[str]
+    mmsis: list
 
 
 @router.get("")
 async def home(request: Request):
-    return templates.TemplateResponse(request, "home.html", context={
-        "sensor": SENSOR.as_dict(),
-        "tile_server": TILE_SERVER.as_dict(),
-    })
+    return templates.TemplateResponse(
+        "home.html",
+        {"request": request, "tile_server": TILE_SERVER.as_dict()},
+    )
 
 
 @router.get("/vessels")
 async def vessels(request: Request):
-    return templates.TemplateResponse(request, "vessels.html")
+    return templates.TemplateResponse("vessels.html", {"request": request})
 
 
 @router.post("/positions")
-async def positions(body: PositionsRequest):
+async def positions(request: Request, body: PositionsRequest):
     """Return latest positions for the requested MMSIs."""
-    mmsis = [m for m in body.mmsis if _MMSI_RE.match(m)]
+    mmsis = [m for m in body.mmsis if _MMSI_RE.match(str(m))]
     mmsis = mmsis[:_MAX_MMSIS]
 
     if not mmsis:
@@ -126,9 +125,9 @@ async def positions(body: PositionsRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    # Production: query Elasticsearch
+    # Production: query Elasticsearch via app.state.es
     try:
-        vessels = es_client.get_latest_positions(mmsis)
+        vessels = await get_latest_positions(request.app.state.es, mmsis)
     except ElasticsearchError:
         vessels = []
 

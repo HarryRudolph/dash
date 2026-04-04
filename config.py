@@ -3,6 +3,10 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 def _bool(value: str) -> bool:
     return value.lower() in ("1", "true", "yes")
@@ -14,7 +18,7 @@ class SensorConfig:
     lat: float
     lon: float
 
-    def as_dict(self) -> dict[str, float | str]:
+    def as_dict(self) -> dict:
         return {
             "name": self.name,
             "lat": self.lat,
@@ -26,7 +30,7 @@ class SensorConfig:
 class SatvisConfig:
     default_tags: str
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict:
         return {
             "defaultTags": self.default_tags,
         }
@@ -42,7 +46,7 @@ class TileServerConfig:
     def satvis_layer(self) -> str:
         return "Custom" if self.url else "OfflineHighres"
 
-    def as_dict(self) -> dict[str, int | str]:
+    def as_dict(self) -> dict:
         return {
             "url": self.url,
             "credit": self.credit,
@@ -68,6 +72,8 @@ class SenzingConfig:
 class ElasticsearchConfig:
     url: str
     ais_index: str
+    user: str
+    password: str
 
     @property
     def enabled(self) -> bool:
@@ -75,9 +81,42 @@ class ElasticsearchConfig:
 
 
 @dataclass(frozen=True)
+class MongoConfig:
+    url: str
+    database: str
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url)
+
+
+@dataclass(frozen=True)
+class MinioConfig:
+    endpoint: str
+    access_key: str
+    secret_key: str
+    secure: bool
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.endpoint)
+
+
+@dataclass(frozen=True)
+class PostgresConfig:
+    dsn: str
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.dsn)
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     offline_mode: bool
 
+
+FORWARDED_HOST = os.environ.get("FORWARDED_HOST", "http://localhost:8000")
 
 DEV_MODE = _bool(os.environ.get("DASHBOARD_DEV", ""))
 
@@ -115,6 +154,24 @@ SATVIS = SatvisConfig(
 ELASTICSEARCH = ElasticsearchConfig(
     url=os.environ.get("ES_URL", "").rstrip("/"),
     ais_index=os.environ.get("ES_AIS_INDEX", "ais_positions"),
+    user=os.environ.get("ES_USER", ""),
+    password=os.environ.get("ES_PASS", ""),
+)
+
+MONGO = MongoConfig(
+    url=os.environ.get("MONGO_URL", ""),
+    database=os.environ.get("MONGO_DATABASE", "analytics"),
+)
+
+MINIO = MinioConfig(
+    endpoint=os.environ.get("MINIO_ENDPOINT", ""),
+    access_key=os.environ.get("MINIO_ACCESS_KEY", ""),
+    secret_key=os.environ.get("MINIO_SECRET_KEY", ""),
+    secure=_bool(os.environ.get("MINIO_SECURE", "1")),
+)
+
+POSTGRES = PostgresConfig(
+    dsn=os.environ.get("POSTGRES_DSN", ""),
 )
 
 RUNTIME = RuntimeConfig(

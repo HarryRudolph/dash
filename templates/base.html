@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Dashboard{% endblock %}</title>
-  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/dashboard/static/css/base.css">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -13,13 +13,7 @@
     <!-- Logo — replace the SVG below with your custom logo -->
     <div class="nav-logo">
       {% block logo %}
-      <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Placeholder: replace with your SVG paths -->
-        <rect x="2" y="2" width="32" height="32" rx="8"
-              stroke="currentColor" stroke-width="2" fill="currentColor" fill-opacity="0.13"/>
-        <path d="M12 18h12M18 12v12" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round"/>
-      </svg>
+      <img src="/dashboard/static/images/logo.svg" alt="Logo">
       {% endblock %}
     </div>
 
