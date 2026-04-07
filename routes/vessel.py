@@ -8,6 +8,7 @@ are relative to /dashboard.
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from config import TILE_SERVER
 from routes import templates
 from services.elasticsearch import get_vessel_identity, get_vessel_track
 from services.mongo import get_vessel_events
@@ -112,12 +113,17 @@ async def vessel_map(request: Request, mmsi: str):
         return HTMLResponse("<p style='color:#8d99ab;padding:2rem;'>No track data available</p>")
 
     # Build a simple Leaflet map inline
+    tile_url = TILE_SERVER.url
+    tile_max = TILE_SERVER.maximum_level
+
     lats = [p["lat"] for p in points]
     lons = [p["lon"] for p in points]
     center_lat = sum(lats) / len(lats)
     center_lon = sum(lons) / len(lons)
     coords_js = ",".join(f"[{p['lat']},{p['lon']}]" for p in points)
     last = points[-1]
+
+    tile_layer = f"L.tileLayer('{tile_url}',{{maxZoom:{tile_max}}})" if tile_url else "L.tileLayer('')"
 
     html = f"""<!DOCTYPE html>
 <html><head>
@@ -128,7 +134,7 @@ async def vessel_map(request: Request, mmsi: str):
 <div id="m"></div>
 <script>
 var m=L.map('m').setView([{center_lat},{center_lon}],8);
-L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:18}}).addTo(m);
+{tile_layer}.addTo(m);
 L.polyline([{coords_js}],{{color:'#4c7fd1',weight:2}}).addTo(m);
 L.circleMarker([{last['lat']},{last['lon']}],{{radius:5,color:'#69a7ff',fillOpacity:1}}).addTo(m);
 </script></body></html>"""

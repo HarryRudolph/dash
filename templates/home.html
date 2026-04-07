@@ -93,10 +93,6 @@
   var map = L.map('map', {zoomControl: true}).setView([51.5, -1.0], 6);
   if (tileUrl) {
     L.tileLayer(tileUrl, { maxZoom: tileMaxZoom }).addTo(map);
-  } else {
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-    }).addTo(map);
   }
 
   // Ship icon factory
