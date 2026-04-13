@@ -163,7 +163,7 @@ async def vessel_network(mmsi: str):
         return JSONResponse(_stub_network(mmsi))
 
     try:
-        payload = senzing_client.get_entity_by_record_id(mmsi)
+        payload = senzing_client.search_by_mmsi(mmsi)
         graph = build_cytoscape_graph(
             payload,
             focus_entity_id=None,
@@ -199,7 +199,7 @@ async def vessel_network_expand(mmsi: str, entity_id: int):
         })
 
     try:
-        payload = senzing_client.get_entity_by_entity_id(entity_id)
+        payload = senzing_client.get_entity_network([entity_id])
         graph = build_cytoscape_graph(
             payload,
             focus_entity_id=entity_id,

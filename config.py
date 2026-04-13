@@ -60,16 +60,15 @@ class TileServerConfig:
 
 @dataclass(frozen=True)
 class SenzingConfig:
-    api_url: str
+    api_url: str           # e.g. https://sensing-api.localdomain.uk/entities
     data_source: str
     auth_token: str
     timeout_seconds: float
-    entity_by_record_path: str
-    entity_by_entity_path: str
+    verify_ssl: bool
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_url and self.data_source)
+        return bool(self.api_url)
 
 
 @dataclass(frozen=True)
@@ -141,14 +140,7 @@ SENZING = SenzingConfig(
     data_source=os.environ.get("SZ_DATA_SOURCE", "AIS"),
     auth_token=os.environ.get("SZ_API_TOKEN", ""),
     timeout_seconds=float(os.environ.get("SZ_TIMEOUT_SECONDS", "10")),
-    entity_by_record_path=os.environ.get(
-        "SZ_ENTITY_BY_RECORD_PATH",
-        "/entity-resolution/v1/entities/by-record/{data_source}/{record_id}",
-    ),
-    entity_by_entity_path=os.environ.get(
-        "SZ_ENTITY_BY_ENTITY_PATH",
-        "/entity-resolution/v1/entities/{entity_id}",
-    ),
+    verify_ssl=_bool(os.environ.get("SZ_VERIFY_SSL", "")),
 )
 
 SATVIS = SatvisConfig(

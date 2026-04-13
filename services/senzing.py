@@ -1,13 +1,18 @@
-"""Thin Senzing API client and graph transformation helpers."""
+"""Senzing v3 API client and Cytoscape graph transformation helpers.
+
+v3 endpoints used:
+  GET  /entities?attrs={"MMSI_NUMBER":"<mmsi>"}   → search by attributes
+  GET  /entities/entity-networks?entities=...      → entity network graph
+"""
 
 from __future__ import annotations
 
 import json
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+
+import requests
 
 from config import SENZING
 
@@ -22,6 +27,8 @@ class CytoscapeGraph:
     meta: dict[str, Any]
 
 
+# ── helpers ──────────────────────────────────────────────────────────────
+
 def _coalesce(*values: Any) -> Any:
     for value in values:
         if value not in (None, "", [], {}):
@@ -30,19 +37,17 @@ def _coalesce(*values: Any) -> Any:
 
 
 def _as_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    return []
+    return value if isinstance(value, list) else []
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    return {}
+    return value if isinstance(value, dict) else {}
 
+
+# ── client ───────────────────────────────────────────────────────────────
 
 class SenzingClient:
-    """Fetches entity data from a Senzing-compatible REST API."""
+    """Talks to a Senzing v3 REST API."""
 
     def __init__(self) -> None:
         self.config = SENZING
@@ -51,64 +56,89 @@ class SenzingClient:
     def enabled(self) -> bool:
         return self.config.enabled
 
-    def get_entity_by_record_id(self, record_id: str) -> dict[str, Any]:
-        return self._request(
-            self.config.entity_by_record_path,
-            data_source=self.config.data_source,
-            record_id=record_id,
-        )
+    # -- public API -------------------------------------------------------
 
-    def get_entity_by_entity_id(self, entity_id: int | str) -> dict[str, Any]:
-        return self._request(
-            self.config.entity_by_entity_path,
-            entity_id=str(entity_id),
-        )
+    def search_by_mmsi(self, mmsi: str) -> dict[str, Any]:
+        """Search entities by MMSI attribute.
+        Returns the top search result dict which contains
+        RESOLVED_ENTITY and RELATED_ENTITIES."""
+        attrs = json.dumps({"MMSI_NUMBER": mmsi})
+        resp = self._get(self.config.api_url, params={"attrs": attrs})
 
-    def _request(self, path_template: str, **params: str) -> dict[str, Any]:
+        results = _as_list(
+            _as_dict(resp.get("data")).get("searchResults")
+        )
+        if not results:
+            raise SenzingError(f"No Senzing entity found for MMSI {mmsi}")
+        return results[0]
+
+    def get_entity_network(
+        self,
+        entity_ids: list[int | str],
+        max_degrees: int = 2,
+    ) -> dict[str, Any]:
+        """Fetch the entity network for one or more entity IDs.
+        Returns the data dict with ENTITIES and ENTITY_PATHS."""
+        entities_param = json.dumps({
+            "ENTITIES": [{"ENTITY_ID": int(eid)} for eid in entity_ids],
+        })
+        url = f"{self.config.api_url}/entity-networks"
+        resp = self._get(url, params={
+            "entities": entities_param,
+            "maxDegrees": str(max_degrees),
+        })
+        return _as_dict(resp.get("data"))
+
+    # -- transport --------------------------------------------------------
+
+    def _get(
+        self, url: str, params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         if not self.enabled:
             raise SenzingError("Senzing integration is not configured.")
 
-        template_values = {
-            key: value
-            for key, value in params.items()
-        }
-        template_values.update({
-            f"{key}_quoted": quote(value, safe="")
-            for key, value in params.items()
-        })
-
-        relative_path = path_template.format_map(template_values)
-        # Build URL by direct concatenation to avoid urljoin interpreting
-        # the path as a filesystem path (seen on Git Bash / MSYS where
-        # leading '/' is rewritten to 'C:/Program Files/Git/...').
-        url = self.config.api_url.rstrip("/") + "/" + relative_path.lstrip("/")
-
-        headers = {"Accept": "application/json"}
+        headers: dict[str, str] = {"Accept": "application/json"}
         if self.config.auth_token:
             headers["Authorization"] = f"Bearer {self.config.auth_token}"
 
-        request = Request(url, headers=headers, method="GET")
+        # Build URL with encoded query string (matches the pattern the user
+        # validated: urllib.parse.urlencode → requests.get)
+        qs = urllib.parse.urlencode(params or {})
+        full_url = f"{url}?{qs}" if qs else url
 
         try:
-            with urlopen(request, timeout=self.config.timeout_seconds) as response:
-                payload = response.read().decode("utf-8")
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            resp = requests.get(
+                full_url,
+                headers=headers,
+                timeout=self.config.timeout_seconds,
+                verify=self.config.verify_ssl,
+            )
+            resp.raise_for_status()
+        except requests.ConnectionError as exc:
+            raise SenzingError(f"Senzing connection failed: {exc}") from exc
+        except requests.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.response.text
+            except Exception:
+                pass
             raise SenzingError(
-                f"Senzing request failed with HTTP {exc.code}: {detail or exc.reason}"
+                f"Senzing request failed with HTTP {exc.response.status_code}: {detail}"
             ) from exc
-        except URLError as exc:
-            raise SenzingError(f"Senzing request failed: {exc.reason}") from exc
+        except requests.Timeout as exc:
+            raise SenzingError("Senzing request timed out") from exc
 
         try:
-            parsed = json.loads(payload)
-        except json.JSONDecodeError as exc:
+            parsed = resp.json()
+        except ValueError as exc:
             raise SenzingError("Senzing response was not valid JSON.") from exc
 
         if not isinstance(parsed, dict):
             raise SenzingError("Senzing response JSON must be an object.")
         return parsed
 
+
+# ── cytoscape graph builder ──────────────────────────────────────────────
 
 def build_cytoscape_graph(
     payload: dict[str, Any],
@@ -117,6 +147,12 @@ def build_cytoscape_graph(
     focus_label: str | None = None,
     focus_type: str | None = None,
 ) -> CytoscapeGraph:
+    """Convert a Senzing v3 response into Cytoscape-compatible elements.
+
+    Handles both shapes:
+      - Search result: {RESOLVED_ENTITY: {...}, RELATED_ENTITIES: [...]}
+      - Entity network: {ENTITIES: [...], ENTITY_PATHS: [...]}
+    """
     entities = payload.get("ENTITIES")
     if isinstance(entities, list):
         return _build_network_graph(
@@ -135,6 +171,8 @@ def build_cytoscape_graph(
     )
 
 
+# ── single-entity graph (search result) ─────────────────────────────────
+
 def _build_entity_graph(
     payload: dict[str, Any],
     *,
@@ -144,7 +182,7 @@ def _build_entity_graph(
 ) -> CytoscapeGraph:
     resolved_entity = _resolved_entity(payload)
     if not resolved_entity:
-        raise SenzingError("Senzing entity response did not include a resolved entity.")
+        raise SenzingError("Senzing response did not include a resolved entity.")
 
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, dict[str, Any]] = {}
@@ -157,13 +195,12 @@ def _build_entity_graph(
     )
     nodes[root_node["data"]["id"]] = root_node
 
-    root_entity_id = resolved_entity.get("ENTITY_ID") or resolved_entity.get("entityId")
+    root_entity_id = resolved_entity.get("ENTITY_ID")
 
     for related in _related_entities(payload):
-        related_entity_id = related.get("ENTITY_ID") or related.get("entityId")
+        related_entity_id = related.get("ENTITY_ID")
         if related_entity_id is None:
             continue
-
         node = _node_from_entity(related)
         nodes[node["data"]["id"]] = node
         edge = _edge_from_related(root_entity_id, related)
@@ -175,12 +212,14 @@ def _build_entity_graph(
             "edges": list(edges.values()),
         },
         meta={
-            "focus_entity_id": int(root_entity_id),
+            "focus_entity_id": int(root_entity_id) if root_entity_id else None,
             "related_count": len(edges),
             "path_count": 0,
         },
     )
 
+
+# ── multi-entity network graph ──────────────────────────────────────────
 
 def _build_network_graph(
     entities: list[dict[str, Any]],
@@ -198,7 +237,7 @@ def _build_network_graph(
         if not resolved_entity:
             continue
 
-        entity_id = resolved_entity.get("ENTITY_ID") or resolved_entity.get("entityId")
+        entity_id = resolved_entity.get("ENTITY_ID")
         node = _node_from_entity(
             resolved_entity,
             node_type=focus_type if entity_id == focus_entity_id else None,
@@ -208,7 +247,7 @@ def _build_network_graph(
         nodes[node["data"]["id"]] = node
 
         for related in _related_entities(entity_payload):
-            related_entity_id = related.get("ENTITY_ID") or related.get("entityId")
+            related_entity_id = related.get("ENTITY_ID")
             if related_entity_id is None:
                 continue
             nodes[_node_id(related_entity_id)] = _node_from_entity(related)
@@ -218,22 +257,19 @@ def _build_network_graph(
     for path in entity_paths:
         path_entities = _as_list(path.get("ENTITIES"))
         for index in range(len(path_entities) - 1):
-            source_entity_id = path_entities[index]
-            target_entity_id = path_entities[index + 1]
-            edge_id = _edge_id(source_entity_id, target_entity_id, "NETWORK_PATH")
-            edges.setdefault(
-                edge_id,
-                {
-                    "data": {
-                        "id": edge_id,
-                        "source": _node_id(source_entity_id),
-                        "target": _node_id(target_entity_id),
-                        "label": "path",
-                        "match_level_code": "NETWORK_PATH",
-                        "line_style": "dashed",
-                    }
+            src = path_entities[index]
+            tgt = path_entities[index + 1]
+            edge_id = _edge_id(src, tgt, "NETWORK_PATH")
+            edges.setdefault(edge_id, {
+                "data": {
+                    "id": edge_id,
+                    "source": _node_id(src),
+                    "target": _node_id(tgt),
+                    "label": "path",
+                    "match_level_code": "NETWORK_PATH",
+                    "line_style": "dashed",
                 },
-            )
+            })
 
     return CytoscapeGraph(
         elements={
@@ -248,17 +284,17 @@ def _build_network_graph(
     )
 
 
+# ── payload accessors ────────────────────────────────────────────────────
+
 def _resolved_entity(payload: dict[str, Any]) -> dict[str, Any]:
-    return _as_dict(
-        _coalesce(payload.get("RESOLVED_ENTITY"), payload.get("resolvedEntity"))
-    )
+    return _as_dict(payload.get("RESOLVED_ENTITY"))
 
 
 def _related_entities(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    return _as_list(
-        _coalesce(payload.get("RELATED_ENTITIES"), payload.get("relatedEntities"))
-    )
+    return _as_list(payload.get("RELATED_ENTITIES"))
 
+
+# ── node / edge factories ───────────────────────────────────────────────
 
 def _node_from_entity(
     entity: dict[str, Any],
@@ -267,25 +303,22 @@ def _node_from_entity(
     focus_label: str | None = None,
     highlighted: bool = False,
 ) -> dict[str, Any]:
-    entity_id = entity.get("ENTITY_ID") or entity.get("entityId")
+    entity_id = entity.get("ENTITY_ID")
     if entity_id is None:
-        raise SenzingError("Entity node is missing an entity id.")
+        raise SenzingError("Entity node is missing ENTITY_ID.")
 
     label = _coalesce(
         focus_label,
         entity.get("ENTITY_NAME"),
-        entity.get("entityName"),
         entity.get("BEST_NAME"),
-        entity.get("bestName"),
         entity.get("RECORD_ID"),
-        entity.get("recordId"),
         f"Entity {entity_id}",
     )
 
     inferred_type = node_type or _infer_entity_type(entity)
-    record_summary = _record_summary(entity)
+    record_summary = _as_list(entity.get("RECORD_SUMMARY"))
     record_count = sum(
-        item.get("RECORD_COUNT", item.get("recordCount", 0))
+        item.get("RECORD_COUNT", 0)
         for item in record_summary
         if isinstance(item, dict)
     )
@@ -298,7 +331,7 @@ def _node_from_entity(
             "type": inferred_type,
             "record_count": record_count,
             "data_sources": [
-                item.get("DATA_SOURCE") or item.get("dataSource")
+                item.get("DATA_SOURCE")
                 for item in record_summary
                 if isinstance(item, dict)
             ],
@@ -307,21 +340,15 @@ def _node_from_entity(
     }
 
 
-def _edge_from_related(source_entity_id: int | str, related: dict[str, Any]) -> dict[str, Any]:
-    target_entity_id = related.get("ENTITY_ID") or related.get("entityId")
+def _edge_from_related(
+    source_entity_id: int | str, related: dict[str, Any],
+) -> dict[str, Any]:
+    target_entity_id = related.get("ENTITY_ID")
     if target_entity_id is None:
-        raise SenzingError("Related entity is missing an entity id.")
+        raise SenzingError("Related entity is missing ENTITY_ID.")
 
-    match_level_code = (
-        related.get("MATCH_LEVEL_CODE")
-        or related.get("matchLevelCode")
-        or "RELATED"
-    )
-    label = (
-        related.get("MATCH_KEY")
-        or related.get("matchKey")
-        or match_level_code.replace("_", " ").lower()
-    )
+    match_level_code = related.get("MATCH_LEVEL_CODE", "RELATED")
+    label = related.get("MATCH_KEY") or match_level_code.replace("_", " ").lower()
 
     return {
         "data": {
@@ -329,35 +356,17 @@ def _edge_from_related(source_entity_id: int | str, related: dict[str, Any]) -> 
             "source": _node_id(source_entity_id),
             "target": _node_id(target_entity_id),
             "label": label,
-            "match_level": related.get("MATCH_LEVEL") or related.get("matchLevel"),
+            "match_level": related.get("MATCH_LEVEL"),
             "match_level_code": match_level_code,
-            "is_disclosed": related.get("IS_DISCLOSED") or related.get("isDisclosed", 0),
-            "is_ambiguous": related.get("IS_AMBIGUOUS") or related.get("isAmbiguous", 0),
+            "is_disclosed": related.get("IS_DISCLOSED", 0),
+            "is_ambiguous": related.get("IS_AMBIGUOUS", 0),
         }
     }
 
 
-def _record_summary(entity: dict[str, Any]) -> list[dict[str, Any]]:
-    return _as_list(_coalesce(entity.get("RECORD_SUMMARY"), entity.get("recordSummaries")))
-
-
 def _infer_entity_type(entity: dict[str, Any]) -> str:
-    record_type = str(
-        _coalesce(
-            entity.get("RECORD_TYPE"),
-            entity.get("recordType"),
-        )
-        or ""
-    ).upper()
-    label = str(
-        _coalesce(
-            entity.get("ENTITY_NAME"),
-            entity.get("entityName"),
-            entity.get("BEST_NAME"),
-            entity.get("bestName"),
-        )
-        or ""
-    )
+    record_type = str(entity.get("RECORD_TYPE") or "").upper()
+    label = str(_coalesce(entity.get("ENTITY_NAME"), entity.get("BEST_NAME")) or "")
 
     if "VESSEL" in record_type or "MMSI" in label.upper():
         return "vessel"
@@ -372,6 +381,10 @@ def _node_id(entity_id: int | str) -> str:
     return f"entity:{entity_id}"
 
 
-def _edge_id(source_entity_id: int | str, target_entity_id: int | str, relation: str) -> str:
+def _edge_id(
+    source_entity_id: int | str,
+    target_entity_id: int | str,
+    relation: str,
+) -> str:
     ordered = sorted([str(source_entity_id), str(target_entity_id)])
     return f"edge:{ordered[0]}:{ordered[1]}:{relation}"
