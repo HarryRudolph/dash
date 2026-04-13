@@ -6,7 +6,7 @@ configured in app.py startup.
 
 AIS index schema (fields are mostly text/strings):
     @timestamp, Course, Destination, DTG, ETA, Flag, IMO, Length,
-    location (geo_point: {"coordinates": [lon, lat], "type": "Point"}),
+    location: {"lon": -1, "lat": 3},
     MMSI, Name, Speed, Status, Type
 
 MMSI is a text field — collapse is not supported, so we use a terms
@@ -19,9 +19,31 @@ from typing import Any
 
 from config import ELASTICSEARCH
 
+# All ES queries use a 60s timeout to handle slow/large indices.
+_REQUEST_TIMEOUT = 60
+
 
 class ElasticsearchError(RuntimeError):
     """Raised when an Elasticsearch request or response is invalid."""
+
+
+def _parse_location(location):
+    """Extract lat/lon from location dict {"lon": ..., "lat": ...}."""
+    if not isinstance(location, dict):
+        return None, None
+    lon = location.get("lon")
+    lat = location.get("lat")
+    return lat, lon
+
+
+def _to_float(val):
+    """Safely cast a value to float (ES fields may be strings)."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
 
 
 async def get_latest_positions(es, mmsis: list[str]) -> list[dict[str, Any]]:
@@ -75,7 +97,10 @@ async def get_latest_positions(es, mmsis: list[str]) -> list[dict[str, Any]]:
     }
 
     try:
-        resp = await es.search(index=ELASTICSEARCH.ais_index, body=body)
+        resp = await es.search(
+            index=ELASTICSEARCH.ais_index, body=body,
+            request_timeout=_REQUEST_TIMEOUT,
+        )
     except Exception as exc:
         raise ElasticsearchError(f"Elasticsearch query failed: {exc}") from exc
 
@@ -92,25 +117,18 @@ async def get_latest_positions(es, mmsis: list[str]) -> list[dict[str, Any]]:
             continue
         src = latest_hits[0].get("_source", {})
 
-        # location is geo_point: {"coordinates": [lon, lat], "type": "Point"}
-        location = src.get("location", {})
-        coords = location.get("coordinates", [None, None]) if isinstance(location, dict) else [None, None]
-        lon = coords[0] if len(coords) > 0 else None
-        lat = coords[1] if len(coords) > 1 else None
+        lat, lon = _parse_location(src.get("location"))
 
         # Build trail from trail agg
         trail_hits = bucket.get("trail", {}).get("hits", {}).get("hits", [])
         trail = []
         for th in trail_hits:
             ts = th.get("_source", {})
-            t_loc = ts.get("location", {})
-            t_coords = t_loc.get("coordinates", [None, None]) if isinstance(t_loc, dict) else [None, None]
-            t_lon = t_coords[0] if len(t_coords) > 0 else None
-            t_lat = t_coords[1] if len(t_coords) > 1 else None
+            t_lat, t_lon = _parse_location(ts.get("location"))
             if t_lat is not None and t_lon is not None:
                 trail.append({
-                    "lat": t_lat,
-                    "lon": t_lon,
+                    "lat": _to_float(t_lat),
+                    "lon": _to_float(t_lon),
                     "timestamp": ts.get("@timestamp"),
                 })
 
@@ -118,8 +136,8 @@ async def get_latest_positions(es, mmsis: list[str]) -> list[dict[str, Any]]:
             "mmsi": src.get("MMSI"),
             "name": src.get("Name"),
             "flag": src.get("Flag"),
-            "lat": lat,
-            "lon": lon,
+            "lat": _to_float(lat),
+            "lon": _to_float(lon),
             "heading": src.get("Course"),
             "speed": src.get("Speed"),
             "timestamp": src.get("@timestamp"),
@@ -158,7 +176,10 @@ async def get_vessel_identity(es, mmsi: str) -> dict[str, Any] | None:
     }
 
     try:
-        resp = await es.search(index=ELASTICSEARCH.ais_index, body=body)
+        resp = await es.search(
+            index=ELASTICSEARCH.ais_index, body=body,
+            request_timeout=_REQUEST_TIMEOUT,
+        )
     except Exception:
         return None
 
@@ -167,8 +188,7 @@ async def get_vessel_identity(es, mmsi: str) -> dict[str, Any] | None:
         return None
 
     src = hits[0].get("_source", {})
-    location = src.get("location", {})
-    coords = location.get("coordinates", [None, None]) if isinstance(location, dict) else [None, None]
+    lat, lon = _parse_location(src.get("location"))
 
     return {
         "mmsi": src.get("MMSI"),
@@ -182,8 +202,8 @@ async def get_vessel_identity(es, mmsi: str) -> dict[str, Any] | None:
         "heading": src.get("Course"),
         "status": src.get("Status"),
         "eta": src.get("ETA"),
-        "lat": coords[1] if len(coords) > 1 else None,
-        "lon": coords[0] if len(coords) > 0 else None,
+        "lat": _to_float(lat),
+        "lon": _to_float(lon),
         "last_seen": src.get("@timestamp"),
     }
 
@@ -194,7 +214,7 @@ async def get_index_stats(es, index: str) -> dict[str, Any]:
         return {"status": "down", "total_count": None, "last_record": None, "history": []}
 
     try:
-        count_resp = await es.count(index=index)
+        count_resp = await es.count(index=index, request_timeout=_REQUEST_TIMEOUT)
         total = count_resp.get("count", 0)
     except Exception:
         return {"status": "down", "total_count": None, "last_record": None, "history": []}
@@ -204,6 +224,7 @@ async def get_index_stats(es, index: str) -> dict[str, Any]:
         last_resp = await es.search(
             index=index,
             body={"size": 1, "sort": [{"@timestamp": "desc"}], "_source": ["@timestamp"]},
+            request_timeout=_REQUEST_TIMEOUT,
         )
         last_hits = last_resp.get("hits", {}).get("hits", [])
         last_record = last_hits[0]["_source"]["@timestamp"] if last_hits else None
@@ -227,6 +248,7 @@ async def get_index_stats(es, index: str) -> dict[str, Any]:
                     }
                 },
             },
+            request_timeout=_REQUEST_TIMEOUT,
         )
         for bucket in hist_resp.get("aggregations", {}).get("hourly", {}).get("buckets", []):
             history.append({
@@ -264,19 +286,23 @@ async def get_vessel_track(es, mmsi: str, hours: int = 120) -> list[dict[str, An
     }
 
     try:
-        resp = await es.search(index=ELASTICSEARCH.ais_index, body=body)
+        resp = await es.search(
+            index=ELASTICSEARCH.ais_index, body=body,
+            request_timeout=_REQUEST_TIMEOUT,
+        )
     except Exception:
         return []
 
     points = []
     for hit in resp.get("hits", {}).get("hits", []):
         src = hit.get("_source", {})
-        location = src.get("location", {})
-        coords = location.get("coordinates", [None, None]) if isinstance(location, dict) else [None, None]
-        if coords[0] is not None and coords[1] is not None:
+        lat, lon = _parse_location(src.get("location"))
+        lat = _to_float(lat)
+        lon = _to_float(lon)
+        if lat is not None and lon is not None:
             points.append({
-                "lat": coords[1],
-                "lon": coords[0],
+                "lat": lat,
+                "lon": lon,
                 "timestamp": src.get("@timestamp"),
                 "speed": src.get("Speed"),
                 "heading": src.get("Course"),

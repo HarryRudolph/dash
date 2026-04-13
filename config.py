@@ -44,7 +44,11 @@ class TileServerConfig:
 
     @property
     def satvis_layer(self) -> str:
-        return "Custom" if self.url else "OfflineHighres"
+        # In production, always use 'Custom' (the internal tile server).
+        # OfflineHighres is only available as a fallback in dev mode.
+        if DEV_MODE and not self.url:
+            return "OfflineHighres"
+        return "Custom"
 
     def as_dict(self) -> dict:
         return {

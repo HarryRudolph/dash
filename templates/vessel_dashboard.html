@@ -5,6 +5,7 @@
 {% block nav_active_vessels %}active{% endblock %}
 
 {% block head %}
+<link rel="stylesheet" href="/dashboard/static/lib/leaflet/leaflet.css">
 <link rel="stylesheet" href="/dashboard/static/css/vessel_dashboard.css">
 {% endblock %}
 
@@ -40,7 +41,8 @@
       </div>
       <div class="card map-card">
         <h2>Last 5 Days Track</h2>
-        <iframe class="map-frame" id="map-frame"></iframe>
+        <div class="map-loading" id="map-loading"><div class="spinner"></div> Loading track&hellip;</div>
+        <iframe class="map-frame" id="map-frame" style="display:none;" onload="this.style.display='block';document.getElementById('map-loading').style.display='none';"></iframe>
       </div>
     </div>
   </div>
@@ -67,6 +69,19 @@
   <!-- ================ ACTIVITY ================ -->
   <div class="tab-panel" id="panel-activity">
     <div class="card">
+      <div class="choropleth-header">
+        <h2>Event Heatmap</h2>
+        <div class="resolution-control">
+          <label for="res-slider">Resolution</label>
+          <input type="range" id="res-slider" min="1" max="8" value="5" step="1">
+          <span id="res-value">5</span>
+        </div>
+      </div>
+      <div class="choropleth-container" id="choropleth-container">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="card">
       <h2>Recent Events</h2>
       <div id="events-container">
         <div class="loading"><div class="spinner"></div> Loading…</div>
@@ -84,6 +99,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/dashboard/static/lib/leaflet/leaflet.js"></script>
+<script src="/dashboard/static/js/map.js"></script>
 <script src="/dashboard/static/lib/cytoscape.min.js"></script>
 <script>
 (function() {
@@ -415,9 +432,58 @@
   }
 
   // ================================================================
-  // Activity — Events + Pattern
+  // Activity — Events + Choropleth + Pattern
   // ================================================================
+  let choroplethMap = null;
+  let choroplethLayer = null;
+
+  async function loadChoropleth(resolution) {
+    resolution = resolution || 5;
+    const container = document.getElementById('choropleth-container');
+
+    // If map already exists, just swap the layer
+    if (choroplethMap && choroplethLayer) {
+      choroplethMap.removeLayer(choroplethLayer);
+      choroplethLayer = null;
+    }
+
+    try {
+      const geojson = await fetchJSON(`${BASE}/events/heatmap?resolution=${resolution}`);
+      if (!geojson.features || geojson.features.length === 0) {
+        container.innerHTML = '<div class="loading">No location data available</div>';
+        choroplethMap = null;
+        return;
+      }
+
+      if (!choroplethMap) {
+        container.innerHTML = '<div id="choropleth-map"></div>';
+        choroplethMap = DashboardMap.create('choropleth-map', {
+          tileUrl: '{{ tile_server.url }}',
+          tileMaxZoom: {{ tile_server.maximumLevel }} || 19,
+          zoom: 4,
+        });
+      }
+
+      choroplethLayer = DashboardMap.addChoropleth(choroplethMap, geojson);
+      choroplethMap.fitBounds(choroplethLayer.getBounds(), { padding: [30, 30] });
+    } catch (e) {
+      showError(container, 'Failed to load event heatmap');
+    }
+  }
+
   async function loadActivity() {
+    const slider = document.getElementById('res-slider');
+    const resLabel = document.getElementById('res-value');
+
+    slider.addEventListener('input', function () {
+      resLabel.textContent = slider.value;
+    });
+    slider.addEventListener('change', function () {
+      loadChoropleth(parseInt(slider.value, 10));
+    });
+
+    loadChoropleth(parseInt(slider.value, 10));
+
     const evContainer = document.getElementById('events-container');
     try {
       const events = await fetchJSON(`${BASE}/events`);

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from routes import templates
 from services.elasticsearch import get_index_stats
+from services.minio_client import check_health as minio_health, list_objects
 from services.mongo import get_collection_stats, EVENTS_COLLECTION, PORT_CALLS_COLLECTION
 from services.postgres import get_table_stats
 
@@ -101,6 +102,21 @@ async def feed_status(request: Request):
         "source": "mongodb",
         "key": "mongo_port_calls",
         **mongo_ports,
+        "history": [],
+    })
+
+    # -- MinIO buckets -------------------------------------------------------
+    minio = request.app.state.minio
+    minio_up = minio_health(minio)
+    # Example: check for data in a bucket — update bucket name to match deployment
+    minio_objects = list_objects(minio, "ais-data") if minio_up else []
+    feeds.append({
+        "name": "AIS Blob Store",
+        "source": "minio",
+        "key": "minio_ais_data",
+        "status": "up" if minio_up else "down",
+        "total_count": len(minio_objects) if minio_up else None,
+        "last_record": minio_objects[0]["last_modified"] if minio_objects else None,
         "history": [],
     })
 

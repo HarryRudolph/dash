@@ -8,9 +8,12 @@ are relative to /dashboard.
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+import h3
+
 from config import TILE_SERVER
 from routes import templates
 from services.elasticsearch import get_vessel_identity, get_vessel_track
+from services.minio_client import get_json as minio_get_json
 from services.mongo import get_vessel_events
 from services.senzing import (
     SenzingClient,
@@ -56,7 +59,7 @@ def _stub_network(mmsi: str) -> dict:
 async def vessel_dashboard(request: Request, mmsi: str):
     return templates.TemplateResponse(
         "vessel_dashboard.html",
-        {"request": request, "mmsi": mmsi},
+        {"request": request, "mmsi": mmsi, "tile_server": TILE_SERVER.as_dict()},
     )
 
 
@@ -112,16 +115,26 @@ async def vessel_map(request: Request, mmsi: str):
     if not points:
         return HTMLResponse("<p style='color:#8d99ab;padding:2rem;'>No track data available</p>")
 
-    # Build a simple Leaflet map inline
+    # Build a simple Leaflet map inline — ensure coords are floats
     tile_url = TILE_SERVER.url
     tile_max = TILE_SERVER.maximum_level
 
-    lats = [p["lat"] for p in points]
-    lons = [p["lon"] for p in points]
+    def _f(v):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    valid = [p for p in points if _f(p["lat"]) is not None and _f(p["lon"]) is not None]
+    if not valid:
+        return HTMLResponse("<p style='color:#8d99ab;padding:2rem;'>No valid coordinates in track</p>")
+
+    lats = [_f(p["lat"]) for p in valid]
+    lons = [_f(p["lon"]) for p in valid]
     center_lat = sum(lats) / len(lats)
     center_lon = sum(lons) / len(lons)
-    coords_js = ",".join(f"[{p['lat']},{p['lon']}]" for p in points)
-    last = points[-1]
+    coords_js = ",".join(f"[{_f(p['lat'])},{_f(p['lon'])}]" for p in valid)
+    last = valid[-1]
 
     tile_layer = f"L.tileLayer('{tile_url}',{{maxZoom:{tile_max}}})" if tile_url else "L.tileLayer('')"
 
@@ -136,7 +149,7 @@ async def vessel_map(request: Request, mmsi: str):
 var m=L.map('m').setView([{center_lat},{center_lon}],8);
 {tile_layer}.addTo(m);
 L.polyline([{coords_js}],{{color:'#4c7fd1',weight:2}}).addTo(m);
-L.circleMarker([{last['lat']},{last['lon']}],{{radius:5,color:'#69a7ff',fillOpacity:1}}).addTo(m);
+L.circleMarker([{_f(last['lat'])},{_f(last['lon'])}],{{radius:5,color:'#69a7ff',fillOpacity:1}}).addTo(m);
 </script></body></html>"""
     return HTMLResponse(html)
 
@@ -214,6 +227,71 @@ async def vessel_events(request: Request, mmsi: str):
     db = request.app.state.db
     events = get_vessel_events(db, mmsi, limit=10)
     return JSONResponse(events)
+
+
+# ---------------------------------------------------------------------------
+# Tab 3 — Events heatmap: H3 choropleth GeoJSON
+# ---------------------------------------------------------------------------
+# MinIO layout:  <bucket>/h3/<mmsi>/events.json
+# File format:   {"resolution": 8, "cells": {"h3_index": count, ...}}
+#
+# Data is pre-computed at a high resolution (e.g. 8).  The endpoint
+# downsamples to whatever the client requests via ?resolution=.
+
+H3_BUCKET = "analytics"
+H3_STORED_RESOLUTION = 8
+
+
+def _downsample_cells(
+    cells: dict[str, int], stored_res: int, target_res: int,
+) -> dict[str, int]:
+    """Roll up high-res H3 cells to a coarser resolution."""
+    if target_res >= stored_res:
+        return cells
+    out: dict[str, int] = {}
+    for cell, count in cells.items():
+        parent = h3.cell_to_parent(cell, target_res)
+        out[parent] = out.get(parent, 0) + count
+    return out
+
+
+def _cells_to_geojson(cells: dict[str, int]) -> dict:
+    """Convert {h3_index: count} to a GeoJSON FeatureCollection."""
+    features = []
+    for cell, count in cells.items():
+        boundary = h3.cell_to_boundary(cell)
+        # h3 returns [(lat, lng), ...], GeoJSON needs [[lng, lat], ...]
+        coords = [[lng, lat] for lat, lng in boundary]
+        coords.append(coords[0])  # close ring
+        features.append({
+            "type": "Feature",
+            "properties": {"h3_index": cell, "count": count},
+            "geometry": {"type": "Polygon", "coordinates": [coords]},
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
+@router.get("/vessel_info/{mmsi}/events/heatmap")
+async def vessel_events_heatmap(
+    request: Request, mmsi: str, resolution: int = 5,
+):
+    """Read pre-computed H3 cells from MinIO, downsample to the
+    requested resolution, and return GeoJSON + counts."""
+    minio = request.app.state.minio
+    resolution = max(1, min(resolution, H3_STORED_RESOLUTION))
+
+    payload = minio_get_json(minio, H3_BUCKET, f"h3/{mmsi}/events.json")
+
+    if not payload or not payload.get("cells"):
+        return JSONResponse({"type": "FeatureCollection", "features": []})
+
+    stored_res = payload.get("resolution", H3_STORED_RESOLUTION)
+    cells = payload["cells"]
+
+    if resolution < stored_res:
+        cells = _downsample_cells(cells, stored_res, resolution)
+
+    return JSONResponse(_cells_to_geojson(cells))
 
 
 # ---------------------------------------------------------------------------

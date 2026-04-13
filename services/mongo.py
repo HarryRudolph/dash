@@ -32,6 +32,27 @@ def get_vessel_events(db, mmsi: str, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
 
+def get_vessel_events_with_location(
+    db, mmsi: str, limit: int = 500
+) -> list[dict[str, Any]]:
+    """Return recent events that have lat/lon coordinates."""
+    if db is None:
+        return []
+    try:
+        cursor = (
+            db[EVENTS_COLLECTION]
+            .find(
+                {"mmsi": mmsi, "lat": {"$exists": True}, "lon": {"$exists": True}},
+                {"_id": 0},
+            )
+            .sort("timestamp", -1)
+            .limit(limit)
+        )
+        return list(cursor)
+    except Exception:
+        return []
+
+
 def get_collection_stats(db, collection: str) -> dict[str, Any]:
     """Return estimated doc count and status for a MongoDB collection."""
     if db is None:

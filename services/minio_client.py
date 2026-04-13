@@ -43,6 +43,15 @@ def get_object_bytes(minio, bucket: str, object_name: str) -> bytes | None:
         return None
 
 
+def get_json(minio, bucket: str, object_name: str) -> Any:
+    """Download a JSON object from MinIO and parse it."""
+    data = get_object_bytes(minio, bucket, object_name)
+    if data is None:
+        return None
+    import json
+    return json.loads(data)
+
+
 def check_health(minio) -> bool:
     """Return True if MinIO is reachable."""
     if minio is None:

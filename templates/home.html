@@ -72,6 +72,7 @@
 
 {% block scripts %}
 <script src="/dashboard/static/lib/leaflet/leaflet.js"></script>
+<script src="/dashboard/static/js/map.js"></script>
 <script>
 (function () {
   var MAX = 20;
@@ -86,30 +87,11 @@
   var pollTimer = null;
   var lastUpdate = null;
 
-  // Map setup — slippy tile format {z}/{y}/{x} from env, no attribution needed
-  var tileUrl = '{{ tile_server.url }}';
-  var tileMaxZoom = {{ tile_server.maximumLevel }} || 19;
-
-  var map = L.map('map', {zoomControl: true}).setView([51.5, -1.0], 6);
-  if (tileUrl) {
-    L.tileLayer(tileUrl, { maxZoom: tileMaxZoom }).addTo(map);
-  }
-
-  // Ship icon factory
-  function shipIcon(heading, changed) {
-    var rotation = heading != null ? heading : 0;
-    var cls = 'ship-marker' + (changed ? ' changed' : '');
-    return L.divIcon({
-      className: cls,
-      html: '<div class="ship-arrow" style="transform:rotate(' + rotation + 'deg)">' +
-            '<svg viewBox="0 0 24 32" width="18" height="24">' +
-            '<path d="M12 2 L22 28 L12 22 L2 28 Z" fill="#69a7ff" stroke="#fff" stroke-width="1.5"/>' +
-            '</svg></div>',
-      iconSize: [18, 24],
-      iconAnchor: [9, 12],
-      popupAnchor: [0, -14],
-    });
-  }
+  // Map setup via shared module
+  var map = DashboardMap.create('map', {
+    tileUrl: '{{ tile_server.url }}',
+    tileMaxZoom: {{ tile_server.maximumLevel }} || 19,
+  });
 
   // LocalStorage
   function loadTracked() {
@@ -255,10 +237,10 @@
 
       if (markers[mmsi]) {
         markers[mmsi].setLatLng([v.lat, v.lon]);
-        markers[mmsi].setIcon(shipIcon(v.heading, isChanged));
+        markers[mmsi].setIcon(DashboardMap.shipIcon(v.heading, isChanged));
         markers[mmsi].getPopup().setContent(popupContent);
       } else {
-        markers[mmsi] = L.marker([v.lat, v.lon], {icon: shipIcon(v.heading, false)})
+        markers[mmsi] = L.marker([v.lat, v.lon], {icon: DashboardMap.shipIcon(v.heading, false)})
           .bindPopup(popupContent, {className: 'dark-popup'})
           .addTo(map);
       }
