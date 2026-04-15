@@ -3,6 +3,11 @@
 v3 endpoints used:
   GET  /entities?attrs={"MMSI_NUMBER":"<mmsi>"}   → search by attributes
   GET  /entities/entity-networks?entities=...      → entity network graph
+
+v3 responses use camelCase keys and search results are flat entity objects
+(no RESOLVED_ENTITY wrapper):
+  {"entityId": 123, "entityName": "...", "recordSummaries": [...],
+   "relationshipData": [...]}
 """
 
 from __future__ import annotations
@@ -27,23 +32,6 @@ class CytoscapeGraph:
     meta: dict[str, Any]
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
-
-def _coalesce(*values: Any) -> Any:
-    for value in values:
-        if value not in (None, "", [], {}):
-            return value
-    return None
-
-
-def _as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 # ── client ───────────────────────────────────────────────────────────────
 
 class SenzingClient:
@@ -56,21 +44,20 @@ class SenzingClient:
     def enabled(self) -> bool:
         return self.config.enabled
 
-    # -- public API -------------------------------------------------------
-
-    def search_by_mmsi(self, mmsi: str) -> dict[str, Any]:
+    def search_by_mmsi(self, mmsi: str) -> list[dict[str, Any]]:
         """Search entities by MMSI attribute.
-        Returns the top search result dict which contains
-        RESOLVED_ENTITY and RELATED_ENTITIES."""
+        Returns the full searchResults list — each item is a flat entity
+        with entityId, entityName, recordSummaries, relationshipData, etc."""
         attrs = json.dumps({"MMSI_NUMBER": mmsi})
-        resp = self._get(self.config.api_url, params={"attrs": attrs})
+        resp = self.request(self.config.api_url, params={"attrs": attrs})
 
-        results = _as_list(
-            _as_dict(resp.get("data")).get("searchResults")
-        )
-        if not results:
+        data = resp.get("data")
+        if not isinstance(data, dict):
+            raise SenzingError("Senzing response missing 'data' object.")
+        results = data.get("searchResults")
+        if not isinstance(results, list) or not results:
             raise SenzingError(f"No Senzing entity found for MMSI {mmsi}")
-        return results[0]
+        return results
 
     def get_entity_network(
         self,
@@ -78,20 +65,21 @@ class SenzingClient:
         max_degrees: int = 2,
     ) -> dict[str, Any]:
         """Fetch the entity network for one or more entity IDs.
-        Returns the data dict with ENTITIES and ENTITY_PATHS."""
+        Returns the data dict with entities and entityPaths."""
         entities_param = json.dumps({
             "ENTITIES": [{"ENTITY_ID": int(eid)} for eid in entity_ids],
         })
         url = f"{self.config.api_url}/entity-networks"
-        resp = self._get(url, params={
+        resp = self.request(url, params={
             "entities": entities_param,
             "maxDegrees": str(max_degrees),
         })
-        return _as_dict(resp.get("data"))
+        data = resp.get("data")
+        if not isinstance(data, dict):
+            return {}
+        return data
 
-    # -- transport --------------------------------------------------------
-
-    def _get(
+    def request(
         self, url: str, params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
@@ -101,8 +89,6 @@ class SenzingClient:
         if self.config.auth_token:
             headers["Authorization"] = f"Bearer {self.config.auth_token}"
 
-        # Build URL with encoded query string (matches the pattern the user
-        # validated: urllib.parse.urlencode → requests.get)
         qs = urllib.parse.urlencode(params or {})
         full_url = f"{url}?{qs}" if qs else url
 
@@ -138,133 +124,334 @@ class SenzingClient:
         return parsed
 
 
-# ── cytoscape graph builder ──────────────────────────────────────────────
+# ── cytoscape graph builders ─────────────────────────────────────────────
 
 def build_cytoscape_graph(
-    payload: dict[str, Any],
+    results: list[dict[str, Any]],
     *,
-    focus_entity_id: int | None,
     focus_label: str | None = None,
     focus_type: str | None = None,
 ) -> CytoscapeGraph:
-    """Convert a Senzing v3 response into Cytoscape-compatible elements.
+    """Build a Cytoscape graph from v3 search results.
 
-    Handles both shapes:
-      - Search result: {RESOLVED_ENTITY: {...}, RELATED_ENTITIES: [...]}
-      - Entity network: {ENTITIES: [...], ENTITY_PATHS: [...]}
+    Each result is a flat entity: {entityId, entityName, recordSummaries,
+    relationshipData, ...}.  The first result is treated as the focus entity.
     """
-    entities = payload.get("ENTITIES")
-    if isinstance(entities, list):
-        return _build_network_graph(
-            entities,
-            focus_entity_id=focus_entity_id,
-            focus_label=focus_label,
-            focus_type=focus_type,
-            entity_paths=_as_list(payload.get("ENTITY_PATHS")),
-        )
-
-    return _build_entity_graph(
-        payload,
-        focus_entity_id=focus_entity_id,
-        focus_label=focus_label,
-        focus_type=focus_type,
-    )
-
-
-# ── single-entity graph (search result) ─────────────────────────────────
-
-def _build_entity_graph(
-    payload: dict[str, Any],
-    *,
-    focus_entity_id: int | None,
-    focus_label: str | None,
-    focus_type: str | None,
-) -> CytoscapeGraph:
-    resolved_entity = _resolved_entity(payload)
-    if not resolved_entity:
-        raise SenzingError("Senzing response did not include a resolved entity.")
+    if not results:
+        raise SenzingError("No search results to build graph from.")
 
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, dict[str, Any]] = {}
 
-    root_node = _node_from_entity(
-        resolved_entity,
-        node_type=focus_type or _infer_entity_type(resolved_entity),
-        focus_label=focus_label,
-        highlighted=True,
-    )
-    nodes[root_node["data"]["id"]] = root_node
+    for i, entity in enumerate(results):
+        is_focus = i == 0
 
-    root_entity_id = resolved_entity.get("ENTITY_ID")
-
-    for related in _related_entities(payload):
-        related_entity_id = related.get("ENTITY_ID")
-        if related_entity_id is None:
+        # --- extract entity ID ---
+        eid = entity.get("entityId") or entity.get("ENTITY_ID")
+        if eid is None:
             continue
-        node = _node_from_entity(related)
-        nodes[node["data"]["id"]] = node
-        edge = _edge_from_related(root_entity_id, related)
-        edges[edge["data"]["id"]] = edge
+        eid = int(eid)
 
+        # --- determine label ---
+        if is_focus and focus_label:
+            label = focus_label
+        else:
+            label = (
+                entity.get("entityName")
+                or entity.get("ENTITY_NAME")
+                or entity.get("bestName")
+                or entity.get("BEST_NAME")
+                or f"Entity {eid}"
+            )
+
+        # --- determine entity type ---
+        if is_focus and focus_type:
+            node_type = focus_type
+        else:
+            record_type = str(entity.get("recordType") or entity.get("RECORD_TYPE") or "").upper()
+            entity_label = str(entity.get("entityName") or entity.get("ENTITY_NAME") or entity.get("bestName") or entity.get("BEST_NAME") or "")
+            if "VESSEL" in record_type or "MMSI" in entity_label.upper():
+                node_type = "vessel"
+            elif record_type == "ORGANIZATION":
+                node_type = "company"
+            elif record_type == "PERSON":
+                node_type = "person"
+            else:
+                node_type = "entity"
+
+        # --- record summaries ---
+        summaries = entity.get("recordSummaries") or entity.get("RECORD_SUMMARY") or []
+        if not isinstance(summaries, list):
+            summaries = []
+        record_count = sum(
+            (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
+            for s in summaries if isinstance(s, dict)
+        )
+        data_sources = [
+            s.get("dataSource") or s.get("DATA_SOURCE")
+            for s in summaries if isinstance(s, dict)
+        ]
+
+        # --- add node ---
+        node_id = f"entity:{eid}"
+        nodes[node_id] = {
+            "data": {
+                "id": node_id,
+                "entity_id": eid,
+                "label": label,
+                "type": node_type,
+                "record_count": record_count,
+                "data_sources": data_sources,
+                "highlighted": is_focus,
+            }
+        }
+
+        # --- add relationships as edges + related nodes ---
+        relationships = entity.get("relationshipData") or entity.get("RELATED_ENTITIES") or []
+        if not isinstance(relationships, list):
+            relationships = []
+
+        for rel in relationships:
+            rel_eid = rel.get("entityId") or rel.get("ENTITY_ID")
+            if rel_eid is None:
+                continue
+            rel_eid = int(rel_eid)
+
+            # add related entity as node if not already present
+            rel_node_id = f"entity:{rel_eid}"
+            if rel_node_id not in nodes:
+                rel_label = (
+                    rel.get("entityName")
+                    or rel.get("ENTITY_NAME")
+                    or rel.get("bestName")
+                    or rel.get("BEST_NAME")
+                    or f"Entity {rel_eid}"
+                )
+                rel_record_type = str(rel.get("recordType") or rel.get("RECORD_TYPE") or "").upper()
+                rel_name_str = str(rel_label)
+                if "VESSEL" in rel_record_type or "MMSI" in rel_name_str.upper():
+                    rel_type = "vessel"
+                elif rel_record_type == "ORGANIZATION":
+                    rel_type = "company"
+                elif rel_record_type == "PERSON":
+                    rel_type = "person"
+                else:
+                    rel_type = "entity"
+                rel_summaries = rel.get("recordSummaries") or rel.get("RECORD_SUMMARY") or []
+                if not isinstance(rel_summaries, list):
+                    rel_summaries = []
+                nodes[rel_node_id] = {
+                    "data": {
+                        "id": rel_node_id,
+                        "entity_id": rel_eid,
+                        "label": rel_label,
+                        "type": rel_type,
+                        "record_count": sum(
+                            (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
+                            for s in rel_summaries if isinstance(s, dict)
+                        ),
+                        "data_sources": [
+                            s.get("dataSource") or s.get("DATA_SOURCE")
+                            for s in rel_summaries if isinstance(s, dict)
+                        ],
+                        "highlighted": False,
+                    }
+                }
+
+            # build edge
+            match_level_code = (
+                rel.get("matchLevelCode") or rel.get("MATCH_LEVEL_CODE") or "RELATED"
+            )
+            match_key = rel.get("matchKey") or rel.get("MATCH_KEY")
+            edge_label = match_key or match_level_code.replace("_", " ").lower()
+            ordered = sorted([str(eid), str(rel_eid)])
+            edge_id = f"edge:{ordered[0]}:{ordered[1]}:{match_level_code}"
+            edges[edge_id] = {
+                "data": {
+                    "id": edge_id,
+                    "source": f"entity:{eid}",
+                    "target": f"entity:{rel_eid}",
+                    "label": edge_label,
+                    "match_level": rel.get("matchLevel") or rel.get("MATCH_LEVEL"),
+                    "match_level_code": match_level_code,
+                    "is_disclosed": rel.get("isDisclosed") or rel.get("IS_DISCLOSED") or 0,
+                    "is_ambiguous": rel.get("isAmbiguous") or rel.get("IS_AMBIGUOUS") or 0,
+                }
+            }
+
+    focus_eid = results[0].get("entityId") or results[0].get("ENTITY_ID")
     return CytoscapeGraph(
         elements={
             "nodes": list(nodes.values()),
             "edges": list(edges.values()),
         },
         meta={
-            "focus_entity_id": int(root_entity_id) if root_entity_id else None,
+            "focus_entity_id": int(focus_eid) if focus_eid else None,
             "related_count": len(edges),
-            "path_count": 0,
+            "result_count": len(results),
         },
     )
 
 
-# ── multi-entity network graph ──────────────────────────────────────────
-
-def _build_network_graph(
-    entities: list[dict[str, Any]],
+def build_network_graph(
+    payload: dict[str, Any],
     *,
     focus_entity_id: int | None,
-    focus_label: str | None,
-    focus_type: str | None,
-    entity_paths: list[dict[str, Any]],
 ) -> CytoscapeGraph:
+    """Build a Cytoscape graph from a v3 entity-networks response.
+
+    Payload shape: {entities: [...], entityPaths: [...]}
+    """
+    entities = payload.get("entities") or payload.get("ENTITIES") or []
+    if not isinstance(entities, list):
+        entities = []
+    entity_paths = payload.get("entityPaths") or payload.get("ENTITY_PATHS") or []
+    if not isinstance(entity_paths, list):
+        entity_paths = []
+
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, dict[str, Any]] = {}
 
-    for entity_payload in entities:
-        resolved_entity = _resolved_entity(entity_payload)
-        if not resolved_entity:
+    for entity in entities:
+        if not isinstance(entity, dict):
             continue
 
-        entity_id = resolved_entity.get("ENTITY_ID")
-        node = _node_from_entity(
-            resolved_entity,
-            node_type=focus_type if entity_id == focus_entity_id else None,
-            focus_label=focus_label if entity_id == focus_entity_id else None,
-            highlighted=entity_id == focus_entity_id,
+        eid = entity.get("entityId") or entity.get("ENTITY_ID")
+        if eid is None:
+            continue
+        eid = int(eid)
+        is_focus = eid == focus_entity_id
+
+        # --- label ---
+        label = (
+            entity.get("entityName")
+            or entity.get("ENTITY_NAME")
+            or entity.get("bestName")
+            or entity.get("BEST_NAME")
+            or f"Entity {eid}"
         )
-        nodes[node["data"]["id"]] = node
 
-        for related in _related_entities(entity_payload):
-            related_entity_id = related.get("ENTITY_ID")
-            if related_entity_id is None:
+        # --- entity type ---
+        record_type = str(entity.get("recordType") or entity.get("RECORD_TYPE") or "").upper()
+        label_str = str(label)
+        if "VESSEL" in record_type or "MMSI" in label_str.upper():
+            node_type = "vessel"
+        elif record_type == "ORGANIZATION":
+            node_type = "company"
+        elif record_type == "PERSON":
+            node_type = "person"
+        else:
+            node_type = "entity"
+
+        # --- record summaries ---
+        summaries = entity.get("recordSummaries") or entity.get("RECORD_SUMMARY") or []
+        if not isinstance(summaries, list):
+            summaries = []
+
+        node_id = f"entity:{eid}"
+        nodes[node_id] = {
+            "data": {
+                "id": node_id,
+                "entity_id": eid,
+                "label": label,
+                "type": node_type,
+                "record_count": sum(
+                    (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
+                    for s in summaries if isinstance(s, dict)
+                ),
+                "data_sources": [
+                    s.get("dataSource") or s.get("DATA_SOURCE")
+                    for s in summaries if isinstance(s, dict)
+                ],
+                "highlighted": is_focus,
+            }
+        }
+
+        # --- relationships ---
+        relationships = entity.get("relationshipData") or entity.get("RELATED_ENTITIES") or []
+        if not isinstance(relationships, list):
+            relationships = []
+
+        for rel in relationships:
+            rel_eid = rel.get("entityId") or rel.get("ENTITY_ID")
+            if rel_eid is None:
                 continue
-            nodes[_node_id(related_entity_id)] = _node_from_entity(related)
-            edge = _edge_from_related(entity_id, related)
-            edges[edge["data"]["id"]] = edge
+            rel_eid = int(rel_eid)
 
+            rel_node_id = f"entity:{rel_eid}"
+            if rel_node_id not in nodes:
+                rel_label = (
+                    rel.get("entityName")
+                    or rel.get("ENTITY_NAME")
+                    or rel.get("bestName")
+                    or rel.get("BEST_NAME")
+                    or f"Entity {rel_eid}"
+                )
+                rel_record_type = str(rel.get("recordType") or rel.get("RECORD_TYPE") or "").upper()
+                rel_name_str = str(rel_label)
+                if "VESSEL" in rel_record_type or "MMSI" in rel_name_str.upper():
+                    rel_type = "vessel"
+                elif rel_record_type == "ORGANIZATION":
+                    rel_type = "company"
+                elif rel_record_type == "PERSON":
+                    rel_type = "person"
+                else:
+                    rel_type = "entity"
+                rel_summaries = rel.get("recordSummaries") or rel.get("RECORD_SUMMARY") or []
+                if not isinstance(rel_summaries, list):
+                    rel_summaries = []
+                nodes[rel_node_id] = {
+                    "data": {
+                        "id": rel_node_id,
+                        "entity_id": rel_eid,
+                        "label": rel_label,
+                        "type": rel_type,
+                        "record_count": sum(
+                            (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
+                            for s in rel_summaries if isinstance(s, dict)
+                        ),
+                        "data_sources": [
+                            s.get("dataSource") or s.get("DATA_SOURCE")
+                            for s in rel_summaries if isinstance(s, dict)
+                        ],
+                        "highlighted": False,
+                    }
+                }
+
+            match_level_code = (
+                rel.get("matchLevelCode") or rel.get("MATCH_LEVEL_CODE") or "RELATED"
+            )
+            match_key = rel.get("matchKey") or rel.get("MATCH_KEY")
+            edge_label = match_key or match_level_code.replace("_", " ").lower()
+            ordered = sorted([str(eid), str(rel_eid)])
+            edge_id = f"edge:{ordered[0]}:{ordered[1]}:{match_level_code}"
+            edges[edge_id] = {
+                "data": {
+                    "id": edge_id,
+                    "source": f"entity:{eid}",
+                    "target": f"entity:{rel_eid}",
+                    "label": edge_label,
+                    "match_level": rel.get("matchLevel") or rel.get("MATCH_LEVEL"),
+                    "match_level_code": match_level_code,
+                    "is_disclosed": rel.get("isDisclosed") or rel.get("IS_DISCLOSED") or 0,
+                    "is_ambiguous": rel.get("isAmbiguous") or rel.get("IS_AMBIGUOUS") or 0,
+                }
+            }
+
+    # --- entity paths (dashed edges between path members) ---
     for path in entity_paths:
-        path_entities = _as_list(path.get("ENTITIES"))
-        for index in range(len(path_entities) - 1):
-            src = path_entities[index]
-            tgt = path_entities[index + 1]
-            edge_id = _edge_id(src, tgt, "NETWORK_PATH")
+        path_ids = path.get("entities") or path.get("ENTITIES") or []
+        if not isinstance(path_ids, list):
+            continue
+        for i in range(len(path_ids) - 1):
+            src, tgt = path_ids[i], path_ids[i + 1]
+            ordered = sorted([str(src), str(tgt)])
+            edge_id = f"edge:{ordered[0]}:{ordered[1]}:NETWORK_PATH"
             edges.setdefault(edge_id, {
                 "data": {
                     "id": edge_id,
-                    "source": _node_id(src),
-                    "target": _node_id(tgt),
+                    "source": f"entity:{src}",
+                    "target": f"entity:{tgt}",
                     "label": "path",
                     "match_level_code": "NETWORK_PATH",
                     "line_style": "dashed",
@@ -282,109 +469,3 @@ def _build_network_graph(
             "path_count": len(entity_paths),
         },
     )
-
-
-# ── payload accessors ────────────────────────────────────────────────────
-
-def _resolved_entity(payload: dict[str, Any]) -> dict[str, Any]:
-    return _as_dict(payload.get("RESOLVED_ENTITY"))
-
-
-def _related_entities(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    return _as_list(payload.get("RELATED_ENTITIES"))
-
-
-# ── node / edge factories ───────────────────────────────────────────────
-
-def _node_from_entity(
-    entity: dict[str, Any],
-    *,
-    node_type: str | None = None,
-    focus_label: str | None = None,
-    highlighted: bool = False,
-) -> dict[str, Any]:
-    entity_id = entity.get("ENTITY_ID")
-    if entity_id is None:
-        raise SenzingError("Entity node is missing ENTITY_ID.")
-
-    label = _coalesce(
-        focus_label,
-        entity.get("ENTITY_NAME"),
-        entity.get("BEST_NAME"),
-        entity.get("RECORD_ID"),
-        f"Entity {entity_id}",
-    )
-
-    inferred_type = node_type or _infer_entity_type(entity)
-    record_summary = _as_list(entity.get("RECORD_SUMMARY"))
-    record_count = sum(
-        item.get("RECORD_COUNT", 0)
-        for item in record_summary
-        if isinstance(item, dict)
-    )
-
-    return {
-        "data": {
-            "id": _node_id(entity_id),
-            "entity_id": int(entity_id),
-            "label": label,
-            "type": inferred_type,
-            "record_count": record_count,
-            "data_sources": [
-                item.get("DATA_SOURCE")
-                for item in record_summary
-                if isinstance(item, dict)
-            ],
-            "highlighted": highlighted,
-        }
-    }
-
-
-def _edge_from_related(
-    source_entity_id: int | str, related: dict[str, Any],
-) -> dict[str, Any]:
-    target_entity_id = related.get("ENTITY_ID")
-    if target_entity_id is None:
-        raise SenzingError("Related entity is missing ENTITY_ID.")
-
-    match_level_code = related.get("MATCH_LEVEL_CODE", "RELATED")
-    label = related.get("MATCH_KEY") or match_level_code.replace("_", " ").lower()
-
-    return {
-        "data": {
-            "id": _edge_id(source_entity_id, target_entity_id, match_level_code),
-            "source": _node_id(source_entity_id),
-            "target": _node_id(target_entity_id),
-            "label": label,
-            "match_level": related.get("MATCH_LEVEL"),
-            "match_level_code": match_level_code,
-            "is_disclosed": related.get("IS_DISCLOSED", 0),
-            "is_ambiguous": related.get("IS_AMBIGUOUS", 0),
-        }
-    }
-
-
-def _infer_entity_type(entity: dict[str, Any]) -> str:
-    record_type = str(entity.get("RECORD_TYPE") or "").upper()
-    label = str(_coalesce(entity.get("ENTITY_NAME"), entity.get("BEST_NAME")) or "")
-
-    if "VESSEL" in record_type or "MMSI" in label.upper():
-        return "vessel"
-    if record_type == "ORGANIZATION":
-        return "company"
-    if record_type == "PERSON":
-        return "person"
-    return "entity"
-
-
-def _node_id(entity_id: int | str) -> str:
-    return f"entity:{entity_id}"
-
-
-def _edge_id(
-    source_entity_id: int | str,
-    target_entity_id: int | str,
-    relation: str,
-) -> str:
-    ordered = sorted([str(source_entity_id), str(target_entity_id)])
-    return f"edge:{ordered[0]}:{ordered[1]}:{relation}"

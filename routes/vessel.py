@@ -19,6 +19,7 @@ from services.senzing import (
     SenzingClient,
     SenzingError,
     build_cytoscape_graph,
+    build_network_graph,
 )
 
 router = APIRouter()
@@ -163,22 +164,28 @@ async def vessel_network(mmsi: str):
         return JSONResponse(_stub_network(mmsi))
 
     try:
-        payload = senzing_client.search_by_mmsi(mmsi)
+        results = senzing_client.search_by_mmsi(mmsi)
         graph = build_cytoscape_graph(
-            payload,
-            focus_entity_id=None,
+            results,
             focus_label=f"MMSI {mmsi}",
             focus_type="vessel",
         )
     except SenzingError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    warning = None
+    if graph.meta.get("result_count", 0) > 1:
+        warning = (
+            f"MMSI {mmsi} resolved to {graph.meta['result_count']} entities. "
+            "Showing all matches."
+        )
+
     return JSONResponse({
         "elements": graph.elements,
         "meta": {
             "source": "senzing",
             "seed_entity_id": graph.meta.get("focus_entity_id"),
-            "warning": None,
+            "warning": warning,
             "expandable": True,
             **graph.meta,
         },
@@ -200,7 +207,7 @@ async def vessel_network_expand(mmsi: str, entity_id: int):
 
     try:
         payload = senzing_client.get_entity_network([entity_id])
-        graph = build_cytoscape_graph(
+        graph = build_network_graph(
             payload,
             focus_entity_id=entity_id,
         )
