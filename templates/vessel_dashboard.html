@@ -360,6 +360,19 @@
             style: { 'background-color': '#7b8aa3', 'shape': 'hexagon' }
           },
           {
+            selector: 'node[?highlighted]',
+            style: {
+              'background-color': '#ff7849',
+              'border-color':     '#ffd2b8',
+              'border-width':     4,
+              'width':            46,
+              'height':           46,
+              'font-size':        '13px',
+              'font-weight':      'bold',
+              'z-index':          10,
+            }
+          },
+          {
             selector: 'edge',
             style: {
               'label':              'data(label)',
