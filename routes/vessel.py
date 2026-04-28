@@ -18,7 +18,6 @@ from services.mongo import get_vessel_events
 from services.senzing import (
     SenzingClient,
     SenzingError,
-    build_cytoscape_graph,
     build_network_graph,
 )
 
@@ -165,8 +164,15 @@ async def vessel_network(mmsi: str):
 
     try:
         results = senzing_client.search_by_mmsi(mmsi)
-        graph = build_cytoscape_graph(
-            results,
+        focus_eid_raw = results[0].get("entityId") or results[0].get("ENTITY_ID")
+        if focus_eid_raw is None:
+            raise SenzingError(f"Senzing search result missing entityId for MMSI {mmsi}")
+        focus_eid = int(focus_eid_raw)
+
+        payload = senzing_client.get_entity_network([focus_eid], max_degrees=1)
+        graph = build_network_graph(
+            payload,
+            focus_entity_id=focus_eid,
             focus_label=f"MMSI {mmsi}",
             focus_type="vessel",
         )
@@ -174,10 +180,10 @@ async def vessel_network(mmsi: str):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     warning = None
-    if graph.meta.get("result_count", 0) > 1:
+    if len(results) > 1:
         warning = (
-            f"MMSI {mmsi} resolved to {graph.meta['result_count']} entities. "
-            "Showing all matches."
+            f"MMSI {mmsi} resolved to {len(results)} entities. "
+            "Showing network for the first match."
         )
 
     return JSONResponse({

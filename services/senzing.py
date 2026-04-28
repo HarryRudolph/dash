@@ -124,183 +124,22 @@ class SenzingClient:
         return parsed
 
 
-# ── cytoscape graph builders ─────────────────────────────────────────────
-
-def build_cytoscape_graph(
-    results: list[dict[str, Any]],
-    *,
-    focus_label: str | None = None,
-    focus_type: str | None = None,
-) -> CytoscapeGraph:
-    """Build a Cytoscape graph from v3 search results.
-
-    Each result is a flat entity: {entityId, entityName, recordSummaries,
-    relationshipData, ...}.  The first result is treated as the focus entity.
-    """
-    if not results:
-        raise SenzingError("No search results to build graph from.")
-
-    nodes: dict[str, dict[str, Any]] = {}
-    edges: dict[str, dict[str, Any]] = {}
-
-    for i, entity in enumerate(results):
-        is_focus = i == 0
-
-        # --- extract entity ID ---
-        eid = entity.get("entityId") or entity.get("ENTITY_ID")
-        if eid is None:
-            continue
-        eid = int(eid)
-
-        # --- determine label ---
-        if is_focus and focus_label:
-            label = focus_label
-        else:
-            label = (
-                entity.get("entityName")
-                or entity.get("ENTITY_NAME")
-                or entity.get("bestName")
-                or entity.get("BEST_NAME")
-                or f"Entity {eid}"
-            )
-
-        # --- determine entity type ---
-        if is_focus and focus_type:
-            node_type = focus_type
-        else:
-            record_type = str(entity.get("recordType") or entity.get("RECORD_TYPE") or "").upper()
-            entity_label = str(entity.get("entityName") or entity.get("ENTITY_NAME") or entity.get("bestName") or entity.get("BEST_NAME") or "")
-            if "VESSEL" in record_type or "MMSI" in entity_label.upper():
-                node_type = "vessel"
-            elif record_type == "ORGANIZATION":
-                node_type = "company"
-            elif record_type == "PERSON":
-                node_type = "person"
-            else:
-                node_type = "entity"
-
-        # --- record summaries ---
-        summaries = entity.get("recordSummaries") or entity.get("RECORD_SUMMARY") or []
-        if not isinstance(summaries, list):
-            summaries = []
-        record_count = sum(
-            (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
-            for s in summaries if isinstance(s, dict)
-        )
-        data_sources = [
-            s.get("dataSource") or s.get("DATA_SOURCE")
-            for s in summaries if isinstance(s, dict)
-        ]
-
-        # --- add node ---
-        node_id = f"entity:{eid}"
-        nodes[node_id] = {
-            "data": {
-                "id": node_id,
-                "entity_id": eid,
-                "label": label,
-                "type": node_type,
-                "record_count": record_count,
-                "data_sources": data_sources,
-                "highlighted": is_focus,
-            }
-        }
-
-        # --- add relationships as edges + related nodes ---
-        relationships = entity.get("relationshipData") or entity.get("RELATED_ENTITIES") or []
-        if not isinstance(relationships, list):
-            relationships = []
-
-        for rel in relationships:
-            rel_eid = rel.get("entityId") or rel.get("ENTITY_ID")
-            if rel_eid is None:
-                continue
-            rel_eid = int(rel_eid)
-
-            # add related entity as node if not already present
-            rel_node_id = f"entity:{rel_eid}"
-            if rel_node_id not in nodes:
-                rel_label = (
-                    rel.get("entityName")
-                    or rel.get("ENTITY_NAME")
-                    or rel.get("bestName")
-                    or rel.get("BEST_NAME")
-                    or f"Entity {rel_eid}"
-                )
-                rel_record_type = str(rel.get("recordType") or rel.get("RECORD_TYPE") or "").upper()
-                rel_name_str = str(rel_label)
-                if "VESSEL" in rel_record_type or "MMSI" in rel_name_str.upper():
-                    rel_type = "vessel"
-                elif rel_record_type == "ORGANIZATION":
-                    rel_type = "company"
-                elif rel_record_type == "PERSON":
-                    rel_type = "person"
-                else:
-                    rel_type = "entity"
-                rel_summaries = rel.get("recordSummaries") or rel.get("RECORD_SUMMARY") or []
-                if not isinstance(rel_summaries, list):
-                    rel_summaries = []
-                nodes[rel_node_id] = {
-                    "data": {
-                        "id": rel_node_id,
-                        "entity_id": rel_eid,
-                        "label": rel_label,
-                        "type": rel_type,
-                        "record_count": sum(
-                            (s.get("recordCount") or s.get("RECORD_COUNT") or 0)
-                            for s in rel_summaries if isinstance(s, dict)
-                        ),
-                        "data_sources": [
-                            s.get("dataSource") or s.get("DATA_SOURCE")
-                            for s in rel_summaries if isinstance(s, dict)
-                        ],
-                        "highlighted": False,
-                    }
-                }
-
-            # build edge
-            match_level_code = (
-                rel.get("matchLevelCode") or rel.get("MATCH_LEVEL_CODE") or "RELATED"
-            )
-            match_key = rel.get("matchKey") or rel.get("MATCH_KEY")
-            edge_label = match_key or match_level_code.replace("_", " ").lower()
-            ordered = sorted([str(eid), str(rel_eid)])
-            edge_id = f"edge:{ordered[0]}:{ordered[1]}:{match_level_code}"
-            edges[edge_id] = {
-                "data": {
-                    "id": edge_id,
-                    "source": f"entity:{eid}",
-                    "target": f"entity:{rel_eid}",
-                    "label": edge_label,
-                    "match_level": rel.get("matchLevel") or rel.get("MATCH_LEVEL"),
-                    "match_level_code": match_level_code,
-                    "is_disclosed": rel.get("isDisclosed") or rel.get("IS_DISCLOSED") or 0,
-                    "is_ambiguous": rel.get("isAmbiguous") or rel.get("IS_AMBIGUOUS") or 0,
-                }
-            }
-
-    focus_eid = results[0].get("entityId") or results[0].get("ENTITY_ID")
-    return CytoscapeGraph(
-        elements={
-            "nodes": list(nodes.values()),
-            "edges": list(edges.values()),
-        },
-        meta={
-            "focus_entity_id": int(focus_eid) if focus_eid else None,
-            "related_count": len(edges),
-            "result_count": len(results),
-        },
-    )
-
+# ── cytoscape graph builder ──────────────────────────────────────────────
 
 def build_network_graph(
     payload: dict[str, Any],
     *,
     focus_entity_id: int | None,
+    focus_label: str | None = None,
+    focus_type: str | None = None,
 ) -> CytoscapeGraph:
     """Build a Cytoscape graph from a v3 entity-networks response.
 
     Payload shape: {entities: [...], entityPaths: [...]}
+
+    `focus_label` / `focus_type` override the label and node type for the
+    focus entity (matched by `focus_entity_id`); useful when the caller wants
+    to display, e.g., an MMSI rather than the resolved entity name.
     """
     entities = payload.get("entities") or payload.get("ENTITIES") or []
     if not isinstance(entities, list):
@@ -323,25 +162,31 @@ def build_network_graph(
         is_focus = eid == focus_entity_id
 
         # --- label ---
-        label = (
-            entity.get("entityName")
-            or entity.get("ENTITY_NAME")
-            or entity.get("bestName")
-            or entity.get("BEST_NAME")
-            or f"Entity {eid}"
-        )
+        if is_focus and focus_label:
+            label = focus_label
+        else:
+            label = (
+                entity.get("entityName")
+                or entity.get("ENTITY_NAME")
+                or entity.get("bestName")
+                or entity.get("BEST_NAME")
+                or f"Entity {eid}"
+            )
 
         # --- entity type ---
-        record_type = str(entity.get("recordType") or entity.get("RECORD_TYPE") or "").upper()
-        label_str = str(label)
-        if "VESSEL" in record_type or "MMSI" in label_str.upper():
-            node_type = "vessel"
-        elif record_type == "ORGANIZATION":
-            node_type = "company"
-        elif record_type == "PERSON":
-            node_type = "person"
+        if is_focus and focus_type:
+            node_type = focus_type
         else:
-            node_type = "entity"
+            record_type = str(entity.get("recordType") or entity.get("RECORD_TYPE") or "").upper()
+            label_str = str(label)
+            if "VESSEL" in record_type or "MMSI" in label_str.upper():
+                node_type = "vessel"
+            elif record_type == "ORGANIZATION":
+                node_type = "company"
+            elif record_type == "PERSON":
+                node_type = "person"
+            else:
+                node_type = "entity"
 
         # --- record summaries ---
         summaries = entity.get("recordSummaries") or entity.get("RECORD_SUMMARY") or []
