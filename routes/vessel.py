@@ -12,7 +12,11 @@ import h3
 
 from config import TILE_SERVER
 from routes import templates
-from services.elasticsearch import get_vessel_identity, get_vessel_track
+from services.elasticsearch import (
+    get_vessel_identity,
+    get_vessel_ownership,
+    get_vessel_track,
+)
 from services.minio_client import get_json as minio_get_json
 from services.mongo import get_vessel_events
 from services.senzing import (
@@ -92,14 +96,19 @@ async def vessel_overview(request: Request, mmsi: str):
             "last_seen": ais.get("last_seen"),
         })
 
-    # TODO: query your ownership ES index
     ownership = {
         "registered_owner": None,
         "operator": None,
-        "group_owner": None,
-        "flag_state": None,
-        "classification_society": None,
+        "group_beneficial_owner": None,
+        "ship_manager": None,
+        "technical_manager": None,
+        "doc_company": None,
+        "as_of": None,
     }
+    if identity.get("imo"):
+        record = await get_vessel_ownership(es, identity["imo"])
+        if record:
+            ownership.update(record)
 
     return JSONResponse({"identity": identity, "ownership": ownership})
 

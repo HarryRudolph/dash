@@ -75,6 +75,7 @@ class SenzingConfig:
 class ElasticsearchConfig:
     url: str
     ais_index: str
+    ownership_index: str
     user: str
     password: str
 
@@ -150,6 +151,7 @@ SATVIS = SatvisConfig(
 ELASTICSEARCH = ElasticsearchConfig(
     url=os.environ.get("ES_URL", "").rstrip("/"),
     ais_index=os.environ.get("ES_AIS_INDEX", "ais_positions"),
+    ownership_index=os.environ.get("ES_OWNERSHIP_INDEX", "vessel_ownership"),
     user=os.environ.get("ES_USER", ""),
     password=os.environ.get("ES_PASS", ""),
 )

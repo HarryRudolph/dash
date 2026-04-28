@@ -208,6 +208,70 @@ async def get_vessel_identity(es, mmsi: str) -> dict[str, Any] | None:
     }
 
 
+_OWNERSHIP_ROLES: tuple[tuple[str, str, str], ...] = (
+    ("registered_owner", "RegisteredOwner", "RegisteredOwner_NationalityofControl"),
+    ("operator", "Operator", "Operator_NationalityofControl"),
+    ("group_beneficial_owner", "GroupBeneficialOwner", "GroupBeneficialOwner_NationalityofControl"),
+    ("ship_manager", "ShipManager", "ShipManager_NationalityofControl"),
+    ("technical_manager", "TechnicalManager", "TechnicalManager_NationalityofControl"),
+    ("doc_company", "DOCCompany", "DOC_NationalityofControl"),
+)
+
+
+async def get_vessel_ownership(es, imo: str | int | None) -> dict[str, Any] | None:
+    """Return the most recent ownership record for a vessel by IMO/LRNO.
+
+    The ownership index is updated infrequently — the latest hit may be
+    many years old, but is still the best available answer.
+    """
+    if es is None or imo is None:
+        return None
+
+    imo_str = str(imo).strip()
+    if not imo_str or imo_str == "0":
+        return None
+
+    source_fields = ["LRNO", "@timestamp"]
+    for _, name_field, country_field in _OWNERSHIP_ROLES:
+        source_fields.append(name_field)
+        source_fields.append(country_field)
+
+    body = {
+        "size": 1,
+        "query": {
+            "bool": {
+                "filter": [{"term": {"LRNO.keyword": imo_str}}]
+            }
+        },
+        "sort": [{"@timestamp": "desc"}],
+        "_source": source_fields,
+    }
+
+    try:
+        resp = await es.search(
+            index=ELASTICSEARCH.ownership_index, body=body,
+            request_timeout=_REQUEST_TIMEOUT,
+        )
+    except Exception:
+        return None
+
+    hits = resp.get("hits", {}).get("hits", [])
+    if not hits:
+        return None
+
+    src = hits[0].get("_source", {})
+
+    record: dict[str, Any] = {"as_of": src.get("@timestamp")}
+    for out_key, name_field, country_field in _OWNERSHIP_ROLES:
+        name = src.get(name_field)
+        country = src.get(country_field)
+        if name and country:
+            record[out_key] = f"{name} ({country})"
+        else:
+            record[out_key] = name or None
+    return record
+
+
 async def get_index_stats(es, index: str) -> dict[str, Any]:
     """Return doc count, last record timestamp, and 24h hourly histogram for a feed."""
     if es is None:
