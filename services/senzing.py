@@ -1,8 +1,9 @@
 """Senzing v3 API client and Cytoscape graph transformation helpers.
 
-v3 endpoints used:
-  GET  /entities?attrs={"MMSI_NUMBER":"<mmsi>"}   → search by attributes
-  GET  /entities/entity-networks?entities=...      → entity network graph
+`SZ_API_URL` is the API base URL (e.g. `https://server/api`), without any
+endpoint suffix. v3 endpoints used:
+  GET  {base}/entities?attrs={"MMSI_NUMBER":"<mmsi>"}   → search by attributes
+  GET  {base}/entity-networks?entities=<id>,<id>        → entity network graph
 
 v3 responses use camelCase keys and search results are flat entity objects
 (no RESOLVED_ENTITY wrapper):
@@ -49,7 +50,8 @@ class SenzingClient:
         Returns the full searchResults list — each item is a flat entity
         with entityId, entityName, recordSummaries, relationshipData, etc."""
         attrs = json.dumps({"MMSI_NUMBER": mmsi})
-        resp = self.request(self.config.api_url, params={"attrs": attrs})
+        url = f"{self.config.api_url}/entities"
+        resp = self.request(url, params={"attrs": attrs})
 
         data = resp.get("data")
         if not isinstance(data, dict):
@@ -65,10 +67,14 @@ class SenzingClient:
         max_degrees: int = 2,
     ) -> dict[str, Any]:
         """Fetch the entity network for one or more entity IDs.
-        Returns the data dict with entities and entityPaths."""
-        entities_param = json.dumps({
-            "ENTITIES": [{"ENTITY_ID": int(eid)} for eid in entity_ids],
-        })
+        Returns the data dict with entities and entityPaths.
+
+        v3 REST expects `entities` as a comma-separated list of identifiers,
+        not the v2 JSON-wrapped {"ENTITIES":[...]} payload — sending JSON
+        causes G2 to read the embedded `:` as a DATA_SOURCE/RECORD_ID
+        separator and emit `0027E|Unknown DATA_SOURCE value`.
+        """
+        entities_param = ",".join(str(int(eid)) for eid in entity_ids)
         url = f"{self.config.api_url}/entity-networks"
         resp = self.request(url, params={
             "entities": entities_param,
