@@ -231,7 +231,7 @@ async def get_vessel_ownership(es, imo: str | int | None) -> dict[str, Any] | No
     if not imo_str or imo_str == "0":
         return None
 
-    source_fields = ["LRNO", "@timestamp"]
+    source_fields = ["LRNO", "Last_Updated"]
     for _, name_field, country_field in _OWNERSHIP_ROLES:
         source_fields.append(name_field)
         source_fields.append(country_field)
@@ -243,7 +243,7 @@ async def get_vessel_ownership(es, imo: str | int | None) -> dict[str, Any] | No
                 "filter": [{"term": {"LRNO.keyword": imo_str}}]
             }
         },
-        "sort": [{"@timestamp": "desc"}],
+        "sort": [{"Last_Updated": "desc"}],
         "_source": source_fields,
     }
 
@@ -261,7 +261,7 @@ async def get_vessel_ownership(es, imo: str | int | None) -> dict[str, Any] | No
 
     src = hits[0].get("_source", {})
 
-    record: dict[str, Any] = {"as_of": src.get("@timestamp")}
+    record: dict[str, Any] = {"as_of": src.get("Last_Updated")}
     for out_key, name_field, country_field in _OWNERSHIP_ROLES:
         name = src.get(name_field)
         country = src.get(country_field)
