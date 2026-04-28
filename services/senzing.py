@@ -79,6 +79,11 @@ class SenzingClient:
         resp = self.request(url, params={
             "entities": entities_param,
             "maxDegrees": str(max_degrees),
+            # featureMode=NONE (the default) strips the `features` map, which
+            # leaves no signal for classifying node type. REPRESENTATIVE keeps
+            # one canonical value per feature type.
+            "featureMode": "REPRESENTATIVE",
+            "forceMinimal": "false",
         })
         data = resp.get("data")
         if not isinstance(data, dict):
@@ -138,8 +143,42 @@ def _entity_core(obj: dict[str, Any]) -> dict[str, Any]:
     return inner if isinstance(inner, dict) else obj
 
 
-def _classify_node_type(record_type: str, label: str) -> str:
-    record_type = record_type.upper()
+_VESSEL_FEATURE_KEYS = ("MMSI_NUMBER", "MMSI", "IMO_NUMBER", "IMO", "LR_NUMBER", "VESSEL_NAME")
+_PERSON_NAME_TYPES = {"NAME_FIRST", "NAME_LAST", "NAME_FULL", "NAME_PERSON"}
+
+
+def _classify_node_type(core: dict[str, Any], label: str) -> str:
+    """Classify an entity as vessel / company / person / entity.
+
+    v3 entity-networks doesn't expose a top-level `recordType`; the reliable
+    signal is the `features` map (only populated when the request asks for
+    `featureMode=REPRESENTATIVE` or richer). Falls back to `recordType` /
+    label heuristics so the classifier still produces something useful for
+    minimal payloads.
+    """
+    features = core.get("features") or core.get("FEATURES") or {}
+    if isinstance(features, dict):
+        for key in _VESSEL_FEATURE_KEYS:
+            if features.get(key):
+                return "vessel"
+        names = features.get("NAME") or features.get("NAMES") or []
+        if isinstance(names, list):
+            for n in names:
+                if not isinstance(n, dict):
+                    continue
+                ftype = str(
+                    n.get("featureType")
+                    or n.get("FEATURE_TYPE")
+                    or n.get("usageType")
+                    or n.get("USAGE_TYPE")
+                    or ""
+                ).upper()
+                if ftype == "NAME_ORG":
+                    return "company"
+                if ftype in _PERSON_NAME_TYPES:
+                    return "person"
+
+    record_type = str(core.get("recordType") or core.get("RECORD_TYPE") or "").upper()
     if "VESSEL" in record_type or "MMSI" in label.upper():
         return "vessel"
     if record_type == "ORGANIZATION":
@@ -165,10 +204,7 @@ def _node_data(
         or core.get("BEST_NAME")
         or f"Entity {eid}"
     )
-    node_type = type_override or _classify_node_type(
-        str(core.get("recordType") or core.get("RECORD_TYPE") or ""),
-        str(label),
-    )
+    node_type = type_override or _classify_node_type(core, str(label))
     summaries = core.get("recordSummaries") or core.get("RECORD_SUMMARY") or []
     if not isinstance(summaries, list):
         summaries = []
