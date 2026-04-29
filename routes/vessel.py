@@ -5,12 +5,15 @@ Mounted with prefix="/dashboard" in app.py, so all paths below
 are relative to /dashboard.
 """
 
+import time
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import h3
 
-from config import TILE_SERVER
+from config import ELASTICSEARCH, TILE_SERVER
 from routes import templates
 from services.elasticsearch import get_vessel_identity, get_vessel_track
 from services.minio_client import get_json as minio_get_json
@@ -308,14 +311,104 @@ async def vessel_events_heatmap(
 
 
 # ---------------------------------------------------------------------------
-# Tab 3 — Pattern of Life: 2D histogram data
+# Tab 3 — Pattern of Life: 2D histogram data (hour × day-of-week)
 # ---------------------------------------------------------------------------
+
+# Simple in-process TTL cache: {cache_key: (stored_at_monotonic, result_dict)}
+_pattern_cache: dict[str, tuple[float, dict]] = {}
+_PATTERN_CACHE_TTL = 3600  # seconds
+
+
 @router.get("/vessel_info/{mmsi}/pattern")
-async def vessel_pattern(mmsi: str):
-    # TODO: query ES for last year of AIS, compute histogram
-    pattern = {
-        "x_labels": [],
-        "y_labels": [],
-        "values": [],
+async def vessel_pattern(request: Request, mmsi: str, days: int = 365):
+    cache_key = f"{mmsi}:{days}"
+    now = time.monotonic()
+    cached = _pattern_cache.get(cache_key)
+    if cached and (now - cached[0]) < _PATTERN_CACHE_TTL:
+        return JSONResponse(cached[1])
+
+    es = request.app.state.es
+    _empty = {"x_labels": [], "y_labels": [], "values": []}
+    if es is None:
+        return JSONResponse(_empty)
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+
+    query = {
+        "bool": {
+            "filter": [
+                {"term": {"MMSI.keyword": mmsi}},
+                {"range": {"@timestamp": {
+                    "gte": start_dt.isoformat(),
+                    "lt": end_dt.isoformat(),
+                }}},
+            ]
+        }
     }
-    return JSONResponse(pattern)
+
+    # Collect @timestamp values via PIT-based pagination
+    timestamps: list[datetime] = []
+    pit_id: str | None = None
+    try:
+        pit_resp = await es.open_point_in_time(
+            index=ELASTICSEARCH.ais_index,
+            params={"keep_alive": "2m"},
+        )
+        pit_id = pit_resp["id"]
+
+        search_after = None
+        while True:
+            body: dict = {
+                "size": 1000,
+                "query": query,
+                "_source": ["@timestamp"],
+                "sort": [{"@timestamp": "asc"}, {"_shard_doc": "asc"}],
+                "pit": {"id": pit_id, "keep_alive": "2m"},
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+
+            resp = await es.search(body=body, request_timeout=60)
+            # PIT may rotate the id
+            pit_id = resp.get("pit_id", pit_id)
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                ts_str = hit.get("_source", {}).get("@timestamp")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        timestamps.append(ts)
+                    except ValueError:
+                        pass
+
+            search_after = hits[-1]["sort"]
+            if len(hits) < 1000:
+                break
+    except Exception:
+        return JSONResponse(_empty)
+    finally:
+        if pit_id:
+            try:
+                await es.close_point_in_time(body={"id": pit_id})
+            except Exception:
+                pass
+
+    if not timestamps:
+        return JSONResponse(_empty)
+
+    # Build 7 (dow) × 24 (hour) count matrix
+    matrix = [[0] * 24 for _ in range(7)]
+    for ts in timestamps:
+        matrix[ts.weekday()][ts.hour] += 1
+
+    result = {
+        "x_labels": [str(h) for h in range(24)],
+        "y_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "values": matrix,
+    }
+    _pattern_cache[cache_key] = (now, result)
+    return JSONResponse(result)

@@ -504,16 +504,16 @@
         evContainer.innerHTML = '<div class="loading">No events recorded</div>';
       } else {
         let html = `<table class="events-table">
-          <thead><tr><th>Time</th><th>Type</th><th>Summary</th></tr></thead><tbody>`;
+          <thead><tr><th>Event Type</th><th>Start</th><th>End</th></tr></thead><tbody>`;
         for (const ev of events) {
-          const badgeClass = ev.event_type in
-            {dark_period:1, sts_transfer:1, loitering:1}
-            ? ev.event_type : 'default';
+          const label = ev.label ?? ev.event_type ?? '—';
+          const badgeClass = label.toLowerCase().replace(/\s+/g, '_');
           html += `<tr>
+            <td><span class="event-badge ${badgeClass}">${label}</span></td>
             <td style="font-family:var(--mono);font-size:0.8rem;white-space:nowrap;">
-              ${ev.timestamp ?? '—'}</td>
-            <td><span class="event-badge ${badgeClass}">${ev.event_type ?? '—'}</span></td>
-            <td>${ev.summary ?? '—'}</td>
+              ${ev.start_date ?? '—'}</td>
+            <td style="font-family:var(--mono);font-size:0.8rem;white-space:nowrap;">
+              ${ev.end_date ?? '—'}</td>
           </tr>`;
         }
         html += '</tbody></table>';
@@ -555,7 +555,11 @@
         for (let xi = 0; xi < xLen; xi++) {
           const v = pattern.values[yi]?.[xi] ?? 0;
           const t = v / maxVal;
-          ctx.fillStyle = `hsl(${216 - t * 18}, ${36 + t * 24}%, ${14 + t * 30}%)`;
+          // YlOrRd-style: dark → yellow → orange → red
+          const hue = 55 - t * 55;          // 55° (yellow) → 0° (red)
+          const sat = 70 + t * 25;          // 70% → 95%
+          const lgt = 12 + t * 43;          // 12% (dark) → 55% (bright)
+          ctx.fillStyle = `hsl(${hue}, ${sat}%, ${lgt}%)`;
           ctx.fillRect(padL + xi * cellW, padT + yi * cellH, cellW - 1, cellH - 1);
         }
       }
