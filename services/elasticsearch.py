@@ -15,6 +15,7 @@ aggregation with top_hits instead.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config import ELASTICSEARCH
@@ -309,3 +310,100 @@ async def get_vessel_track(es, mmsi: str, hours: int = 120) -> list[dict[str, An
             })
 
     return points
+
+
+async def get_vessel_pattern(
+    es, mmsi: str, days: int = 365,
+) -> dict[str, Any]:
+    """Return a 7×24 AIS message count matrix (day-of-week × hour-of-day).
+
+    Fetches @timestamp values via PIT-based pagination so the full date range
+    is consumed regardless of index size.  Returns::
+
+        {
+            "x_labels": ["0", "1", ..., "23"],
+            "y_labels": ["Mon", ..., "Sun"],
+            "values":   [[int, ...], ...],   # shape 7×24
+        }
+
+    Returns empty labels/values when ES is unavailable or no data exists.
+    """
+    _empty: dict[str, Any] = {"x_labels": [], "y_labels": [], "values": []}
+    if es is None:
+        return _empty
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+
+    query = {
+        "bool": {
+            "filter": [
+                {"term": {"MMSI.keyword": mmsi}},
+                {"range": {"@timestamp": {
+                    "gte": start_dt.isoformat(),
+                    "lt": end_dt.isoformat(),
+                }}},
+            ]
+        }
+    }
+
+    timestamps: list[datetime] = []
+    pit_id: str | None = None
+    try:
+        pit_resp = await es.open_point_in_time(
+            index=ELASTICSEARCH.ais_index,
+            params={"keep_alive": "2m"},
+        )
+        pit_id = pit_resp["id"]
+
+        search_after = None
+        while True:
+            body: dict = {
+                "size": 1000,
+                "query": query,
+                "_source": ["@timestamp"],
+                "sort": [{"@timestamp": "asc"}, {"_shard_doc": "asc"}],
+                "pit": {"id": pit_id, "keep_alive": "2m"},
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+
+            resp = await es.search(body=body, request_timeout=_REQUEST_TIMEOUT)
+            pit_id = resp.get("pit_id", pit_id)
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                ts_str = hit.get("_source", {}).get("@timestamp")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        timestamps.append(ts)
+                    except ValueError:
+                        pass
+
+            search_after = hits[-1]["sort"]
+            if len(hits) < 1000:
+                break
+    except Exception:
+        return _empty
+    finally:
+        if pit_id:
+            try:
+                await es.close_point_in_time(body={"id": pit_id})
+            except Exception:
+                pass
+
+    if not timestamps:
+        return _empty
+
+    matrix = [[0] * 24 for _ in range(7)]
+    for ts in timestamps:
+        matrix[ts.weekday()][ts.hour] += 1
+
+    return {
+        "x_labels": [str(h) for h in range(24)],
+        "y_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "values": matrix,
+    }
